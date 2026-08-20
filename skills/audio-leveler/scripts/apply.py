@@ -122,7 +122,8 @@ def apply_pass_args(first_pass, target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
 
 
 OUTPUT_SUFFIX = "-leveled.mp3"
-OUTPUT_BITRATE = "192k"
+OUTPUT_BITRATE_STEREO = "192k"
+OUTPUT_BITRATE_MONO = "96k"
 
 
 class OutputExists(Exception):
@@ -134,6 +135,12 @@ def default_output_path(source, from_url, cwd=None):
     stem = Path(source).stem
     base = Path(cwd) if cwd is not None else (Path.cwd() if from_url else Path(source).parent)
     return base / "{0}{1}".format(stem, OUTPUT_SUFFIX)
+
+
+def output_bitrate(mono):
+    """單聲道砍半。192 kbps 是兩聲道的預算，單聲道沿用等於每聲道加倍——檔案大一倍
+    而聽感沒有變好。"""
+    return OUTPUT_BITRATE_MONO if mono else OUTPUT_BITRATE_STEREO
 
 
 def refuse_if_taken(out_path):
@@ -180,7 +187,7 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
                          loudnorm_args=apply_pass_args(first, target_lufs, target_tp))
     second = parse_loudnorm_json(_run(
         ["ffmpeg", "-y", "-nostats", "-hide_banner", "-i", str(path),
-         "-af", chain2, "-c:a", "libmp3lame", "-b:a", OUTPUT_BITRATE, str(out_path)]).stderr)
+         "-af", chain2, "-c:a", "libmp3lame", "-b:a", output_bitrate(mono), str(out_path)]).stderr)
 
     verify_linear(second)
     return {

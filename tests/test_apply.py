@@ -286,3 +286,26 @@ def test_level_fails_before_rendering_when_linear_cannot_hold(tmp_path, monkeypa
     assert not out.exists()
     assert "-18.1" in str(e.value)      # 告訴使用者最高可用的目標
     assert "--target-lufs" in str(e.value)
+
+
+def test_mono_output_halves_the_bitrate():
+    """192 kbps 是給兩聲道的預算。單聲道用同一個數字等於每聲道加倍，檔案白白大一倍
+    而聽感沒有變好——8/20 手工版的 75MB -> 38MB 正是來自這裡。"""
+    assert apply.output_bitrate(mono=True) == "96k"
+    assert apply.output_bitrate(mono=False) == "192k"
+
+
+def test_level_passes_the_mono_bitrate_to_ffmpeg(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    apply.level(str(src), "speech", tmp_path / "o.mp3", mono=True)
+    render = calls[1]
+    assert render[render.index("-b:a") + 1] == "96k"
