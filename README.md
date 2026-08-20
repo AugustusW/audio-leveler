@@ -63,6 +63,9 @@ python3 skills/audio-leveler/scripts/cli.py measure <source>
 python3 skills/audio-leveler/scripts/cli.py apply <source> --filter speech
 ```
 
+On Windows the interpreter is usually `python` or `py -3` rather than `python3`.
+Note that Windows is not part of the verified set — see [Status](#status).
+
 `<source>` is a local audio or video file, an Apple Podcasts episode link, or
 any URL yt-dlp can fetch. Downloads are cached by episode identity, so measuring
 and then applying on the same link downloads once.
@@ -123,6 +126,12 @@ Every render finishes by measuring the output again and reporting one of three
 outcomes: converged by N%, essentially unchanged, or got worse. An unchanged or
 worse result is stated as such — the tool does not describe its own output as a
 success without evidence.
+
+The output format follows the `--out` extension — `mp3`, `m4a`, `wav` or `flac`.
+`--out talk.wav` really does write WAV, and the lossless formats skip the bitrate
+setting entirely. Without `--out`, the default is `<source>-leveled.mp3` next to
+the source. An extension this tool does not write is refused up front rather than
+silently written as something else.
 
 Other flags: `--out PATH`, `--target-lufs` (default −16), `--mono
 auto|force|never`, `--force` to overwrite.

@@ -22,6 +22,11 @@ python3 <skill-dir>/scripts/cli.py measure <source> --json
 python3 <skill-dir>/scripts/cli.py apply <source> --filter speech|segmented|loudness
 ```
 
+**The interpreter name is not the same everywhere.** `python3` is right on macOS and
+most Linux; on Windows it is usually `python`, and `py -3` where the launcher is
+installed. Check which one exists before running the command rather than assuming,
+and if none does, say Python 3.10+ needs installing instead of retrying.
+
 `<source>` is a local audio or video file, an Apple Podcasts episode link, or
 any URL yt-dlp can fetch. Downloads are cached by episode identity, so running
 `measure` and then `apply` on the same link downloads once. The cache lives in
@@ -107,6 +112,7 @@ exists precisely so that nobody has to take the tool's word for it.
 | 6 | Verification failed after rendering. | Report it; the output was discarded and the original is untouched. |
 | 7 | The output path is taken. | Ask before passing `--force`. |
 | 3 | ffmpeg or yt-dlp is missing. | Pass on the install command from the message. Do not install anything. |
+| 2 | Bad input: the source is missing, a URL would not resolve, or the `--out` extension is not one this tool writes (`mp3`, `m4a`, `wav`, `flac`). | The message names the problem. The output format follows the extension, so `--out x.wav` really does write WAV. |
 | 4 | The source is silent or too short to diagnose. | Say so; there is nothing to level. |
 
 ## The stages

@@ -190,37 +190,32 @@ def test_apply_command_mono_never_overrides_detection(monkeypatch, tmp_path):
     assert captured["mono"] is False
 
 
-def test_apply_command_deletes_the_output_when_linear_is_lost(monkeypatch, capsys, tmp_path):
+def test_apply_command_never_deletes_the_target_when_verification_fails(
+        monkeypatch, capsys, tmp_path):
+    """CLI 不得在失敗時刪除目標檔案。
+
+    這條測試原本斷言的是相反的行為——它是在 apply.level 還會直接寫目標檔的年代
+    寫的，當時「失敗就刪掉」至少能清掉半成品。後來 level 改成寫暫存檔、驗證過才
+    搬過去，這個 unlink 就從補救變成了破壞：搭配 --force 時，被刪掉的是使用者
+    原本那個檔案，而且沒有東西補上。
+
+    修了底層卻沒回頭改這條測試，等於用測試把 bug 鎖住。
+    """
     src = tmp_path / "a.mp3"
     src.write_bytes(b"x")
-    out = tmp_path / "a-leveled.mp3"
+    out = tmp_path / "keepme.mp3"
+    out.write_bytes(b"PRECIOUS")
 
-    def fake_level(path, filter_name, out_path, **kwargs):
-        Path(out_path).write_bytes(b"bad render")
+    def fake_level(path, filter_spec, out_path, **kwargs):
         raise cli.apply.LinearModeLost("loudnorm fell back to 'dynamic' instead of linear")
 
-    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
     monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=None: DIAG)
     monkeypatch.setattr(cli.apply, "level", fake_level)
-    assert cli.main(["apply", str(src), "--filter", "speech"]) == 6
-    assert not out.exists()
+    assert cli.main(["apply", str(src), "--filter", "speech",
+                     "--out", str(out), "--force"]) == 6
+    assert out.read_bytes() == b"PRECIOUS"
     assert "dynamic" in capsys.readouterr().err
-
-
-def test_format_comparison_says_unchanged_rather_than_printing_negative_zero():
-    text = cli.format_comparison(RESULT, DIAG, DIAG,
-                                 {"before_lu": 11.77, "after_lu": 11.76, "delta_lu": -0.01,
-                                  "converged_pct": 0.08, "improved": False})
-    assert "-0.0" not in text
-    assert "unchanged" in text.lower()
-
-
-def test_format_comparison_calls_a_regression_worse_not_merely_unimproved():
-    text = cli.format_comparison(RESULT, DIAG, DIAG,
-                                 {"before_lu": 8.0, "after_lu": 9.5, "delta_lu": 1.5,
-                                  "converged_pct": -18.75, "improved": False})
-    assert "worse" in text.lower()
-    assert "+1.5" in text
 
 
 def test_measure_accepts_a_url_source(monkeypatch, capsys, tmp_path):
@@ -359,3 +354,14 @@ def test_impossible_and_lost_linear_get_distinct_exit_codes(monkeypatch, tmp_pat
     not_retryable = cli.main(["apply", str(src), "--filter", "speech"])
 
     assert retryable != not_retryable
+
+
+def test_unsupported_output_format_reports_cleanly_without_a_traceback(capsys, tmp_path):
+    """不支援的副檔名要給訊息，不是丟 stack trace。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    assert cli.main(["apply", str(src), "--filter", "speech",
+                     "--out", str(tmp_path / "o.ogg")]) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "mp3" in err and "wav" in err

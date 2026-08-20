@@ -549,3 +549,38 @@ def test_level_refuses_segmented_without_window_data(tmp_path, monkeypatch):
     monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
     with pytest.raises(ValueError):
         apply.level(str(src), "segmented", tmp_path / "o.mp3", mono=False)
+
+
+def test_encoder_follows_the_output_extension():
+    """`--out foo.wav` 必須真的產生 WAV。把 MP3 內容寫進 .wav 檔名，後續軟體會依
+    副檔名判斷格式而出錯，而且使用者不會發現。"""
+    assert apply.encoder_args("out.wav", mono=False)[:2] == ["-c:a", "pcm_s16le"]
+    assert apply.encoder_args("out.flac", mono=False)[:2] == ["-c:a", "flac"]
+    assert apply.encoder_args("out.mp3", mono=False)[:2] == ["-c:a", "libmp3lame"]
+
+
+def test_lossless_formats_take_no_bitrate():
+    assert "-b:a" not in apply.encoder_args("out.wav", mono=False)
+    assert "-b:a" not in apply.encoder_args("out.flac", mono=False)
+
+
+def test_lossy_formats_still_halve_the_bitrate_for_mono():
+    assert "96k" in apply.encoder_args("out.mp3", mono=True)
+    assert "192k" in apply.encoder_args("out.mp3", mono=False)
+
+
+def test_the_container_is_named_explicitly_not_inferred():
+    """暫存檔名是 `x.mp3.partial`，ffmpeg 從中推不出 muxer。"""
+    args = apply.encoder_args("out.wav", mono=False)
+    assert args[args.index("-f") + 1] == "wav"
+
+
+def test_unknown_output_extension_is_refused_with_the_supported_list():
+    with pytest.raises(apply.UnsupportedOutputFormat) as e:
+        apply.encoder_args("out.ogg", mono=False)
+    assert "mp3" in str(e.value) and "wav" in str(e.value)
+
+
+def test_missing_extension_is_refused_rather_than_guessed():
+    with pytest.raises(apply.UnsupportedOutputFormat):
+        apply.encoder_args("out", mono=False)
