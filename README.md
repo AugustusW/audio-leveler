@@ -182,25 +182,32 @@ These are deliberate, not gaps in testing — for the latter see [Status](#statu
 
 ## Status
 
-v0.1.0 ([CHANGELOG](./CHANGELOG.md)) — 160 tests, of which 154 run fully offline (ffmpeg, ffprobe
+v0.1.0 ([CHANGELOG](./CHANGELOG.md)) — 165 tests, of which 159 run fully offline (ffmpeg, ffprobe
 and yt-dlp are mocked; no network, no media). The remaining 6 drive real ffmpeg and are excluded
 from CI.
 
 | Component | Verified version |
 |---|---|
 | macOS | 26.5.1 (Apple M4 Pro) |
+| Windows | measure path only, under Codex |
 | Python | 3.9.6 and 3.12.13 locally; 3.10–3.13 in CI |
 | ffmpeg | 8.1 |
 | yt-dlp | 2026.07.04 |
 
-**Verified end to end on real material:** one 54-minute podcast episode, resolved from an Apple
-Podcasts link, measured, levelled with `speech`, and confirmed by ear — spread 10.0 → 5.8 LU.
+**Verified end to end on real material:**
 
-**Not yet covered:** `segmented` has only been verified against synthetic step material, not a
-real drifting recording. Linux and Windows are untested beyond CI's unit tests. There is no
-verification of this skill under Codex. Dual-mono detection is whole-file, so a recording whose
-body is dual mono but whose intro is real stereo reports the intro's lower separation — the safe
-answer, not a precise one. The download cache is never pruned.
+- macOS: a 54-minute podcast episode, resolved from an Apple Podcasts link, measured, levelled
+  with `speech`, and confirmed by ear — spread 10.0 → 5.8 LU.
+- Windows, under Codex: a 50-minute episode resolved, downloaded, cached and measured — spread
+  4.16 LU, and the skill correctly declined to process it rather than treating a stable recording
+  as a problem. This is the first time that "nothing needs doing" path has run on real material;
+  until then it had only been unit-tested.
+
+**Not yet covered:** the render itself has not been run on Windows — only the measure path has.
+Linux is untested beyond CI's unit tests. `segmented` has only been verified against synthetic
+step material, not a real drifting recording. Dual-mono detection is whole-file, so a recording
+whose body is dual mono but whose intro is real stereo reports the intro's lower separation — the
+safe answer, not a precise one. The download cache is never pruned.
 
 Issues and PRs welcome.
 
