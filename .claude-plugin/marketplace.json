@@ -1,0 +1,13 @@
+{
+  "name": "audio-leveler",
+  "description": "Marketplace for the audio-leveler plugin: measure loudness inconsistency, then fix it with the right filter.",
+  "owner": { "name": "AugustusW" },
+  "plugins": [
+    {
+      "name": "audio-leveler",
+      "source": "./",
+      "description": "Diagnose and fix inconsistent loudness in speech audio: measure first, then pick the right filter.",
+      "version": "0.1.0"
+    }
+  ]
+}

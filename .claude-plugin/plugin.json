@@ -1,0 +1,8 @@
+{
+  "name": "audio-leveler",
+  "description": "Diagnose and fix inconsistent loudness in speech audio: measure first, then pick the right filter.",
+  "version": "0.1.0",
+  "author": { "name": "AugustusW", "url": "https://github.com/AugustusW" },
+  "license": "MIT",
+  "keywords": ["audio", "podcast", "loudness", "normalize", "ffmpeg", "speech"]
+}
