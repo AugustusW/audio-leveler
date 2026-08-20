@@ -244,6 +244,10 @@ OUTPUT_BITRATE_STEREO = "192k"
 OUTPUT_BITRATE_MONO = "96k"
 
 
+class UnsupportedOutputFormat(Exception):
+    """輸出副檔名不在支援清單內。不猜、也不默默寫成別的格式。"""
+
+
 class OutputExists(Exception):
     """輸出檔已存在。預設拒絕覆寫，需 --force。"""
 
@@ -259,6 +263,37 @@ def output_bitrate(mono):
     """單聲道砍半。192 kbps 是兩聲道的預算，單聲道沿用等於每聲道加倍——檔案大一倍
     而聽感沒有變好。"""
     return OUTPUT_BITRATE_MONO if mono else OUTPUT_BITRATE_STEREO
+
+
+# 副檔名 -> (ffmpeg codec, muxer, 是否有損)
+_OUTPUT_FORMATS = {
+    ".mp3": ("libmp3lame", "mp3", True),
+    ".m4a": ("aac", "ipod", True),
+    ".wav": ("pcm_s16le", "wav", False),
+    ".flac": ("flac", "flac", False),
+}
+
+
+def encoder_args(out_path, mono):
+    """依輸出副檔名決定編碼參數。
+
+    副檔名要說實話：把 MP3 內容寫進 `.wav` 檔名，後續軟體會依副檔名判斷格式而
+    出錯，而且使用者不會察覺。無損格式不帶位元率。
+
+    muxer 一律明講而不讓 ffmpeg 從檔名推——實際寫入的是 `x.wav.partial` 這種
+    暫存檔名，推不出來。
+    """
+    suffix = Path(out_path).suffix.lower()
+    if suffix not in _OUTPUT_FORMATS:
+        raise UnsupportedOutputFormat(
+            "cannot write '{0}': supported output formats are {1}".format(
+                suffix or "a file with no extension",
+                ", ".join(sorted(k.lstrip(".") for k in _OUTPUT_FORMATS))))
+    codec, muxer, lossy = _OUTPUT_FORMATS[suffix]
+    args = ["-c:a", codec]
+    if lossy:
+        args += ["-b:a", output_bitrate(mono)]
+    return args + ["-f", muxer]
 
 
 def refuse_if_taken(out_path):
@@ -294,6 +329,7 @@ def level(path, filter_spec, out_path, *, mono, samples=None, duration_sec=None,
         gain_expression = build_volume_expression(
             gain_curve(measure.window_stats(samples, win)), win)
     out_path = Path(out_path)
+    encoder_args(out_path, mono)      # 副檔名不支援的話，在開工前就講
     if not force:
         refuse_if_taken(out_path)
     measure.require_tool("ffmpeg")
@@ -329,8 +365,7 @@ def level(path, filter_spec, out_path, *, mono, samples=None, duration_sec=None,
     try:
         second = parse_loudnorm_json(_run(
             ["ffmpeg", "-y", "-nostats", "-hide_banner", "-i", str(path),
-             "-af", chain2, "-c:a", "libmp3lame", "-b:a", output_bitrate(mono),
-             "-f", "mp3", str(partial)]).stderr)
+             "-af", chain2] + encoder_args(out_path, mono) + [str(partial)]).stderr)
         verify_linear(second)
         os.replace(partial, out_path)
     finally:

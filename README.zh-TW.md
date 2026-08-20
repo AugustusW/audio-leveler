@@ -57,6 +57,9 @@ python3 skills/audio-leveler/scripts/cli.py measure <來源>
 python3 skills/audio-leveler/scripts/cli.py apply <來源> --filter speech
 ```
 
+Windows 上的直譯器通常是 `python` 或 `py -3`，不是 `python3`。另請注意 Windows
+不在已驗證的範圍內，見[狀態](#狀態)。
+
 `<來源>` 可以是本地音訊或影片檔、Apple Podcasts 單集連結，或任何 yt-dlp 抓得到的
 URL。下載會依集數身分快取，所以同一個連結先 measure 再 apply 只會下載一次。
 
@@ -111,6 +114,10 @@ required to call it fake stereo, so a downmix could lose content.
 每次產出結束後都會重新量測輸出檔，並回報三種結局之一：收斂 N%、幾乎沒有變化、
 變得更差。沒有改善就會如實這樣講——工具不會在沒有證據的情況下，把自己的產出說成
 成功。
+
+輸出格式依 `--out` 的副檔名決定——`mp3`、`m4a`、`wav`、`flac`。`--out talk.wav` 就是
+真的寫出 WAV，無損格式也不會帶位元率設定。沒給 `--out` 時預設是來源同目錄的
+`<原檔名>-leveled.mp3`。不支援的副檔名會在開工前直接拒絕，而不是默默寫成別的格式。
 
 其他旗標：`--out PATH`、`--target-lufs`（預設 −16）、`--mono auto|force|never`、
 `--force` 覆寫既有檔案。

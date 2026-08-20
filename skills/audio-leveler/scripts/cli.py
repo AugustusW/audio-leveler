@@ -145,22 +145,24 @@ def format_comparison(result, before, after, delta):
 
 
 def cmd_apply(args):
-    # 明確給了 --out 就先擋掉已存在的檔案。apply.level 內部也擋，但那要等下載完
-    # （URL 來源可能是 75MB）又量測完（30 秒）才撞得到。
-    if args.out and not args.force:
-        apply.refuse_if_taken(Path(args.out))
+    # 明確給了 --out 就先把能在開工前知道的事都問完：副檔名支不支援、檔案在不在。
+    # apply.level 內部也擋，但那要等下載完（URL 來源可能是 75MB）又量測完
+    # （30 秒）才撞得到。
+    if args.out:
+        apply.encoder_args(Path(args.out), mono=False)
+        if not args.force:
+            apply.refuse_if_taken(Path(args.out))
     path, from_url = _resolve_source(args.source)
     before, samples = measure.analyse(path)
     out_path = (Path(args.out) if args.out
                 else apply.default_output_path(path, from_url=from_url))
     mono = {"auto": before["dual_mono"], "force": True, "never": False}[args.mono]
-    try:
-        result = apply.level(path, args.filter, out_path, mono=mono,
-                             samples=samples, duration_sec=before["duration_sec"],
-                             target_lufs=args.target_lufs, force=args.force)
-    except apply.LinearModeLost:
-        Path(out_path).unlink(missing_ok=True)
-        raise
+    # 這裡刻意沒有「失敗就刪掉輸出」的補救。apply.level 寫的是暫存檔，驗證通過才
+    # 搬到目標位置，所以失敗時目標檔案根本沒被碰過——再刪一次刪到的會是使用者
+    # 原本那個檔案。
+    result = apply.level(path, args.filter, out_path, mono=mono,
+                         samples=samples, duration_sec=before["duration_sec"],
+                         target_lufs=args.target_lufs, force=args.force)
     after = measure.diagnose(result["output_path"])
     print(format_comparison(result, before, after, measure.improvement(before, after)))
     return EXIT_OK
@@ -216,6 +218,9 @@ def main(argv=None):
     except apply.LinearModeLost as e:
         print(str(e), file=sys.stderr)
         return EXIT_LINEAR_LOST
+    except apply.UnsupportedOutputFormat as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_BAD_INPUT
     except apply.OutputExists as e:
         print(str(e), file=sys.stderr)
         return EXIT_OUTPUT_EXISTS

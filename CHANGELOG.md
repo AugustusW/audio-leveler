@@ -40,3 +40,16 @@ First release.
   any source under 12 minutes reported a drift of 0 by construction and was
   routed to the wrong filter.
 - Mono output uses half the bitrate; 192 kbps is a two-channel budget.
+
+### Fixed after an independent audit
+
+- `--force` plus a failed verification could still delete the user's existing
+  file. The underlying render had already been made safe (temp file, replaced
+  only after verification), but the CLI kept an `unlink()` from before that
+  change — and the test written at the time asserted the deletion, so the fix
+  never reached it.
+- `--out foo.wav` wrote MP3 content under a `.wav` name. The output format now
+  follows the extension (`mp3`, `m4a`, `wav`, `flac`); anything else is refused
+  before any work is done.
+- `SKILL.md` and both READMEs assumed `python3` exists. On Windows the
+  interpreter is usually `python` or `py -3`.
