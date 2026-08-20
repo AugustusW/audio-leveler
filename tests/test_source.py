@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -181,3 +182,47 @@ def test_download_does_not_force_an_mp3_transcode(monkeypatch, tmp_path):
     source.download_audio("https://example.com/x", tmp_path)
     download_cmd = calls[-1]
     assert "mp3" not in download_cmd, download_cmd
+
+
+def test_fetch_recovers_from_a_corrupt_cache_entry(monkeypatch, tmp_path):
+    """半寫入的 meta.json 不能讓後續呼叫整個掛掉——重下載即可。"""
+    monkeypatch.setattr(source, "resolve_apple_podcast",
+                        lambda url: ("https://cdn.example.com/ep13.mp3", "EP13"))
+    downloads = []
+
+    def fake_download(url, workdir):
+        downloads.append(url)
+        p = workdir / "ep13.mp3"
+        p.write_bytes(b"audio")
+        return str(p), "EP13"
+
+    monkeypatch.setattr(source, "download_audio", fake_download)
+    url = "https://podcasts.apple.com/tw/podcast/x/id111?i=222"
+    path, _ = source.fetch(url, cache_root=tmp_path)
+    meta = Path(path).parent / "meta.json"
+    meta.write_text('{"audio": "ep13.mp')          # 截斷
+    source.fetch(url, cache_root=tmp_path)
+    assert len(downloads) == 2
+
+
+def test_fetch_writes_the_cache_entry_atomically(monkeypatch, tmp_path):
+    """meta.json 要先寫暫存檔再 rename，否則中途中斷會留下半個檔案。"""
+    monkeypatch.setattr(source, "resolve_apple_podcast",
+                        lambda url: ("https://cdn.example.com/ep13.mp3", "EP13"))
+
+    def fake_download(url, workdir):
+        p = workdir / "ep13.mp3"
+        p.write_bytes(b"audio")
+        return str(p), "EP13"
+
+    monkeypatch.setattr(source, "download_audio", fake_download)
+    real_replace = source.os.replace
+    renamed = []
+
+    def spy_replace(src, dst):
+        renamed.append((str(src), str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(source.os, "replace", spy_replace)
+    source.fetch("https://podcasts.apple.com/tw/podcast/x/id111?i=222", cache_root=tmp_path)
+    assert renamed and renamed[0][1].endswith("meta.json")

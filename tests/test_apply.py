@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -92,14 +93,14 @@ def test_build_chain_puts_mono_first():
     """單聲道必須在最前面：loudnorm 的 true-peak 超取樣成本隨聲道數，
     先降為單聲道讓 EP13 的整條鏈由 83 秒降到 52 秒。"""
     chain = apply.build_chain("speech", mono=True, loudnorm_args="I=-16")
-    assert chain.startswith("pan=mono|c0=0.5*c0+0.5*c1,")
-    assert chain == ("pan=mono|c0=0.5*c0+0.5*c1,"
+    assert chain.startswith(apply.MONO_FILTER + ",")
+    assert chain == ("aformat=channel_layouts=mono,"
                      "speechnorm=e=12.5:r=0.0001:l=1:p=0.95,loudnorm=I=-16")
 
 
 def test_build_chain_without_mono_omits_the_pan():
     chain = apply.build_chain("speech", mono=False, loudnorm_args="I=-16")
-    assert "pan=" not in chain
+    assert "aformat=" not in chain
     assert chain == "speechnorm=e=12.5:r=0.0001:l=1:p=0.95,loudnorm=I=-16"
 
 
@@ -182,7 +183,7 @@ def test_level_runs_two_passes_and_verifies_linear(tmp_path, monkeypatch):
         calls.append(cmd)
         if _is_measure_pass(cmd):
             return subprocess.CompletedProcess(cmd, 0, "", PASS1)
-        out.write_bytes(b"rendered")
+        Path(cmd[-1]).write_bytes(b"rendered")
         return subprocess.CompletedProcess(cmd, 0, "", PASS2)
 
     monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
@@ -191,7 +192,8 @@ def test_level_runs_two_passes_and_verifies_linear(tmp_path, monkeypatch):
 
     assert len(calls) == 2
     assert _is_measure_pass(calls[0])          # 第一段丟棄輸出
-    assert str(out) in calls[1]                # 第二段才寫檔
+    assert str(out) + ".partial" in calls[1]    # 第二段寫暫存檔，驗證過才搬過去
+    assert out.read_bytes() == b"rendered"      # 搬完了
     assert result["normalization_type"] == "linear"
     assert result["target_lra"] == 20.0
     assert result["mono"] is True
@@ -206,6 +208,8 @@ def test_level_measures_the_same_signal_it_renders(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"rendered")
         return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
 
     monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
@@ -302,6 +306,8 @@ def test_level_passes_the_mono_bitrate_to_ffmpeg(tmp_path, monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"rendered")
         return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
 
     monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
@@ -309,3 +315,111 @@ def test_level_passes_the_mono_bitrate_to_ffmpeg(tmp_path, monkeypatch):
     apply.level(str(src), "speech", tmp_path / "o.mp3", mono=True)
     render = calls[1]
     assert render[render.index("-b:a") + 1] == "96k"
+
+
+def test_mono_filter_handles_layouts_beyond_stereo():
+    """pan=mono|c0=...c0+c1 只看前兩聲道：5.1 素材的對白在 FC，會被整個丟掉
+    （實測輸出 RMS 為 -inf，全靜音）。aformat 讓 ffmpeg 套用該 layout 正確的
+    降混係數，且在 stereo 上與舊寫法結果完全相同（實測皆 -33.045916）。"""
+    assert apply.MONO_FILTER == "aformat=channel_layouts=mono"
+
+
+def test_level_leaves_the_target_untouched_when_verification_fails(tmp_path, monkeypatch):
+    """--force 是同意「取代」，不是同意「失敗就刪掉」。
+
+    實測過的資料遺失：既有檔被 ffmpeg -y 覆寫，verify_linear 才失敗，CLI 再把它
+    unlink——原檔沒了，也沒有東西補上。
+    """
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "keepme.mp3"
+    out.write_bytes(b"PRECIOUS")
+    dynamic = ('{"input_i" : "-24.0", "input_tp" : "-12.0", "input_lra" : "6.0", '
+               '"input_thresh" : "-34.0", "normalization_type" : "dynamic", '
+               '"target_offset" : "0.0"}')
+
+    def fake_run(cmd, **kwargs):
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"rendered garbage")
+        return subprocess.CompletedProcess(cmd, 0, "", dynamic)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    with pytest.raises(apply.LinearModeLost):
+        apply.level(str(src), "speech", out, mono=False, force=True)
+    assert out.read_bytes() == b"PRECIOUS"
+
+
+def test_level_leaves_no_temp_file_behind_on_failure(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "o.mp3"
+    dynamic = ('{"input_i" : "-24.0", "input_tp" : "-12.0", "input_lra" : "6.0", '
+               '"input_thresh" : "-34.0", "normalization_type" : "dynamic", '
+               '"target_offset" : "0.0"}')
+
+    def fake_run(cmd, **kwargs):
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"garbage")
+        return subprocess.CompletedProcess(cmd, 0, "", dynamic)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    with pytest.raises(apply.LinearModeLost):
+        apply.level(str(src), "speech", out, mono=False)
+    assert list(tmp_path.glob("*.partial")) == []
+    assert not out.exists()
+
+
+def test_suggested_target_is_always_feasible():
+    """回報的建議值經過四捨五入後必須仍然可行。
+
+    掃過 input_i x input_tp 的合理範圍，原本的 '%.1f' 有 13518 組會捨進到 ceiling
+    之上，使用者照抄後撞上位元相同的錯誤訊息。EP13 (-18.08 -> -18.1) 剛好捨在
+    安全的一側——又是單一樣本兩種做法給相同答案。
+    """
+    bad = []
+    for i_i in [x / 100 for x in range(-3500, -500, 37)]:
+        for i_tp in [x / 100 for x in range(-900, 0, 41)]:
+            first = {"input_i": str(i_i), "input_tp": str(i_tp), "input_lra": "6.0"}
+            suggestion = apply.suggested_target_lufs(first)
+            if not apply.linear_is_possible(first, target_lufs=suggestion):
+                bad.append((i_i, i_tp, suggestion))
+    assert bad == [], bad[:5]
+
+
+def test_suggested_target_rounds_toward_more_headroom():
+    first = {"input_i": "-30.0", "input_tp": "-4.86", "input_lra": "6.0"}
+    assert apply.max_linear_target_lufs(first) == pytest.approx(-26.64)
+    assert apply.suggested_target_lufs(first) == -26.7      # 不是 -26.6
+
+
+def test_linear_is_impossible_when_measured_lra_is_zero():
+    """ffmpeg 把 measured_LRA=0 當成「沒量到」的哨兵值，一律走 dynamic。
+
+    實測（其餘條件不變）：measured_LRA=0.00 -> dynamic、0.10 -> linear。
+    完全平坦的素材（已限幅、極短片段、單音）會踩到，原本要跑完整段才被事後驗證抓到。
+    """
+    flat = {"input_i": "-24.0", "input_tp": "-12.0", "input_lra": "0.00"}
+    assert apply.linear_is_possible(flat, target_lufs=-16.0) is False
+    assert apply.linear_is_possible(dict(flat, input_lra="0.10"), target_lufs=-16.0) is True
+
+
+def test_render_names_the_output_format_explicitly(tmp_path, monkeypatch):
+    """暫存檔名讓 ffmpeg 推不出 muxer（'.mp3.partial' 不是已知副檔名），所以格式
+    必須明講。這個 bug 是 e2e 測試抓到的——mock 測試全部照過。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"rendered")
+        return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    apply.level(str(src), "speech", tmp_path / "o.mp3", mono=False)
+    render = calls[1]
+    assert render[render.index("-f") + 1] == "mp3"

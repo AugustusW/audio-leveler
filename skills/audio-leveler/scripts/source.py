@@ -240,6 +240,9 @@ def fetch(url, cache_root=None):
         path, _ = download_audio(media, entry)
     else:
         path, title = download_audio(url, entry)
-    meta_path.write_text(json.dumps(
+    # 先寫暫存檔再 rename：中途中斷會留下半個 meta.json，下次讀到就得重下載
+    tmp_meta = meta_path.with_name(meta_path.name + ".tmp")
+    tmp_meta.write_text(json.dumps(
         {"audio": Path(path).name, "title": title, "url": url}, ensure_ascii=False))
+    os.replace(tmp_meta, meta_path)
     return path, title

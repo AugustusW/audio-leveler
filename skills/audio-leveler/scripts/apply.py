@@ -3,6 +3,8 @@
 這個模組不做任何決定——不猜濾鏡、不猜要不要處理。判斷在 SKILL.md（spec ADR-4）。
 """
 import json
+import math
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -45,16 +47,36 @@ def max_linear_target_lufs(first_pass, target_tp=TARGET_TP):
     linear 是整檔套一個固定增益，所以 true peak 跟著整體響度一起走：需要的增益是
     `target_I - input_i`，套完的峰值就是 `input_tp + 增益`。要它不超過 target_tp，
     目標響度的上限即為 `input_i + (target_tp - input_tp)`。
+
+    這只是三個前提中的一個，見 linear_is_possible。
     """
     return float(first_pass["input_i"]) + (target_tp - float(first_pass["input_tp"]))
 
 
-def linear_is_possible(first_pass, target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
-    """ffmpeg 的 linear 有兩個前提，LRA 只是其中一個。
+def suggested_target_lufs(first_pass, target_tp=TARGET_TP):
+    """回報給使用者的建議目標：把上限往「更多餘裕」的方向取到 0.1 LUFS。
 
-    另一個是 true peak 的餘裕，而它不受 loudnorm_target_lra 控制——EP13 的單聲道
-    路徑就是 LRA 條件成立、TP 條件不成立，ffmpeg 於是靜默改用 dynamic。
+    直接 '%.1f' 會有一半機率捨進到上限之上，使用者照抄後撞上位元相同的錯誤訊息。
+    負值往下取（更小 = 更安靜 = 更多 true peak 餘裕）。
     """
+    return math.floor(max_linear_target_lufs(first_pass, target_tp) * 10.0) / 10.0
+
+
+def linear_is_possible(first_pass, target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
+    """ffmpeg 的 linear 有**三**個前提，目標 LRA 只是其中一個。
+
+    1. 目標 LRA >= 實測 LRA —— 由 loudnorm_target_lra 保證
+    2. 套用增益後不超過目標 true peak —— 不受 LRA 推導控制。EP13 的單聲道路徑
+       正是 LRA 過關、TP 不過關，ffmpeg 於是靜默改用 dynamic
+    3. 實測 LRA 不得為 0 —— ffmpeg 把 0 當成「沒量到」的哨兵值。實測（其餘條件
+       不變）：measured_LRA=0.00 得 dynamic、0.10 得 linear。完全平坦的素材
+       （已限幅、極短片段、單音）會踩到
+
+    spec 原本只把第 1 點寫成規定，第 2 點在實作期間爆掉，第 3 點在 code review
+    期間爆掉。這裡集中成一個判斷，下一個被發現的前提就是加一行的事。
+    """
+    if float(first_pass["input_lra"]) == 0.0:
+        return False
     return target_lufs <= max_linear_target_lufs(first_pass, target_tp) + 1e-9
 
 
@@ -80,7 +102,10 @@ def verify_linear(second_pass):
                 kind, second_pass.get("input_lra", "unknown")))
 
 
-MONO_FILTER = "pan=mono|c0=0.5*c0+0.5*c1"
+# pan=mono|c0=0.5*c0+0.5*c1 只引用 c0/c1：5.1 素材的對白在 FC，會被整個丟掉
+# （實測輸出 RMS -inf）。aformat 讓 ffmpeg 依 layout 套用正確的降混係數，
+# 且在 stereo 上與舊寫法輸出完全相同（實測皆 -33.045916）。
+MONO_FILTER = "aformat=channel_layouts=mono"
 
 FILTERS = {
     # 段落內快速起伏（麥克風距離變化、多人音量差）。EP13 實測有效。
@@ -174,22 +199,38 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
         ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
          "-af", chain1, "-f", "null", "-"]).stderr)
 
+    if float(first["input_lra"]) == 0.0:
+        raise LinearNotPossible(
+            "this source measures a loudness range of exactly 0 LU, which ffmpeg treats "
+            "as 'not measured' and which forces dynamic normalisation. The material is "
+            "already completely flat, so levelling has nothing to correct.")
     if not linear_is_possible(first, target_lufs, target_tp):
         raise LinearNotPossible(
             "linear normalisation to {0:.1f} LUFS is not possible for this source: it "
             "measures {1} LUFS at {2} dBTP, so the required gain would push the true peak "
-            "past the {3:.1f} dBTP limit. The highest target that stays linear is "
-            "{4:.1f} LUFS — rerun with --target-lufs {4:.1f}.".format(
+            "past the {3:.1f} dBTP limit. The ceiling for linear is {4:.2f} LUFS — "
+            "rerun with --target-lufs {5:.1f}.".format(
                 target_lufs, first["input_i"], first["input_tp"], target_tp,
-                max_linear_target_lufs(first, target_tp)))
+                max_linear_target_lufs(first, target_tp),
+                suggested_target_lufs(first, target_tp)))
 
+    # 先算到暫存檔，驗證通過才搬到目標位置。直接寫目標會在驗證失敗時毀掉既有檔案
+    # ——`--force` 是同意「取代」，不是同意「失敗就刪掉」。順帶讓非 --force 的
+    # 路徑也不怕中途中斷。
     chain2 = build_chain(filter_name, mono=mono,
                          loudnorm_args=apply_pass_args(first, target_lufs, target_tp))
-    second = parse_loudnorm_json(_run(
-        ["ffmpeg", "-y", "-nostats", "-hide_banner", "-i", str(path),
-         "-af", chain2, "-c:a", "libmp3lame", "-b:a", output_bitrate(mono), str(out_path)]).stderr)
-
-    verify_linear(second)
+    # 副檔名留在最後一段沒有用：ffmpeg 由檔名推 muxer，所以下面明確帶 -f mp3
+    partial = out_path.with_name(out_path.name + ".partial")
+    try:
+        second = parse_loudnorm_json(_run(
+            ["ffmpeg", "-y", "-nostats", "-hide_banner", "-i", str(path),
+             "-af", chain2, "-c:a", "libmp3lame", "-b:a", output_bitrate(mono),
+             "-f", "mp3", str(partial)]).stderr)
+        verify_linear(second)
+        os.replace(partial, out_path)
+    finally:
+        if partial.exists():
+            partial.unlink()
     return {
         "filter": filter_name,
         "mono": mono,
