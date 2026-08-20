@@ -2,8 +2,11 @@
 
 判斷（該用哪條濾鏡、要不要處理）一律在 SKILL.md 交給宿主 LLM，見 spec ADR-4。
 """
+import json
 import math
+import shutil
 import statistics
+import subprocess
 
 _S_PREFIX = "lavfi.r128.S="
 _PTS_MARKER = "pts_time:"
@@ -119,3 +122,90 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
         "dual_mono": dual_mono,
         "speech_ratio": len(kept) / len(samples) if samples else 0.0,
     }
+
+
+FFMPEG_TIMEOUT_SEC = 3600
+PROBE_TIMEOUT_SEC = 120
+
+INSTALL_HINT = {
+    "ffmpeg": "install with: brew install ffmpeg (macOS) or apt install ffmpeg (Debian/Ubuntu)",
+    "ffprobe": "ffprobe ships with ffmpeg — brew install ffmpeg (macOS) or apt install ffmpeg",
+}
+
+
+class MissingTool(Exception):
+    """必要的外部工具不在 PATH 上。本專案不自動安裝。"""
+
+
+class FfmpegError(Exception):
+    """ffmpeg / ffprobe 執行失敗，或輸出不是預期的形狀。"""
+
+
+def require_tool(name):
+    path = shutil.which(name)
+    if not path:
+        raise MissingTool("{0} not found — {1}".format(name, INSTALL_HINT.get(name, "")))
+    return path
+
+
+def _to_float(token):
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def parse_ebur128_summary(stderr):
+    """ebur128 的 stderr summary -> (integrated_LUFS, LRA_LU)
+
+    'LRA low:' 與 'LRA high:' 也以 LRA 開頭，所以比對整個 token 而非前綴。
+    """
+    integrated = lra = None
+    for line in stderr.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 2:
+            continue
+        if parts[0] == "I:":
+            integrated = _to_float(parts[1])
+        elif parts[0] == "LRA:":
+            lra = _to_float(parts[1])
+    if integrated is None or lra is None:
+        raise FfmpegError("ebur128 summary not found in ffmpeg output")
+    return integrated, lra
+
+
+def probe_audio(path):
+    """(聲道數, 長度秒)。"""
+    require_tool("ffprobe")
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels,duration", "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=PROBE_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffprobe failed: {0}".format(p.stderr.strip()[:300]))
+    try:
+        streams = json.loads(p.stdout).get("streams") or []
+    except ValueError as e:
+        raise FfmpegError("ffprobe returned unparsable JSON: {0}".format(e))
+    if not streams:
+        raise FfmpegError("no audio stream found in {0}".format(path))
+    s = streams[0]
+    return int(s.get("channels") or 0), float(s.get("duration") or 0.0)
+
+
+def run_ebur128(path):
+    """跑一趟 ebur128，同時取回 short-term 序列與 integrated / LRA。
+
+    metadata 走 stdout（ametadata file=-），summary 走 stderr——兩者不互相污染，
+    所以一趟就夠，不需要為了 integrated 再跑一次。
+    """
+    require_tool("ffmpeg")
+    p = subprocess.run(
+        ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", "ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.S:file=-",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffmpeg ebur128 failed: {0}".format(p.stderr.strip()[-500:]))
+    integrated, lra = parse_ebur128_summary(p.stderr)
+    return parse_short_term(p.stdout), integrated, lra

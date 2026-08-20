@@ -1,3 +1,6 @@
+import json
+import subprocess
+
 import pytest
 
 import measure
@@ -107,3 +110,74 @@ def test_build_diagnosis_raises_when_everything_is_gated_out():
     with pytest.raises(measure.InsufficientSignal):
         measure.build_diagnosis(samples, integrated=float("-inf"), lra=0.0, duration=1.0,
                                 channels=1, dual_mono=False)
+
+
+EBUR128_STDERR = """[Parsed_ebur128_0 @ 0x962c0cfc0] Summary:
+
+  Integrated loudness:
+    I:         -28.4 LUFS
+    Threshold: -41.0 LUFS
+
+  Loudness range:
+    LRA:        10.6 LU
+    Threshold: -51.0 LUFS
+    LRA low:   -38.9 LUFS
+    LRA high:  -28.3 LUFS
+"""
+
+
+def test_parse_ebur128_summary_reads_i_and_lra():
+    assert measure.parse_ebur128_summary(EBUR128_STDERR) == (-28.4, 10.6)
+
+
+def test_parse_ebur128_summary_ignores_lra_low_and_high():
+    # 'LRA low:' 與 'LRA high:' 也以 LRA 開頭，必須靠精確 token 比對排除
+    i, lra = measure.parse_ebur128_summary(EBUR128_STDERR)
+    assert lra == 10.6 and i == -28.4
+
+
+def test_parse_ebur128_summary_raises_when_absent():
+    with pytest.raises(measure.FfmpegError):
+        measure.parse_ebur128_summary("no summary here")
+
+
+def test_require_tool_raises_missing_tool(monkeypatch):
+    monkeypatch.setattr(measure.shutil, "which", lambda name: None)
+    with pytest.raises(measure.MissingTool) as e:
+        measure.require_tool("ffmpeg")
+    assert "brew install ffmpeg" in str(e.value)
+
+
+def test_probe_audio_reads_channels_and_duration(monkeypatch):
+    payload = json.dumps({"streams": [{"channels": 2, "duration": "3247.000000"}]})
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert measure.probe_audio("x.mp3") == (2, 3247.0)
+
+
+def test_probe_audio_raises_when_no_audio_stream(monkeypatch):
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, '{"streams": []}', ""))
+    with pytest.raises(measure.FfmpegError):
+        measure.probe_audio("x.txt")
+
+
+def test_run_ebur128_returns_samples_and_summary(monkeypatch):
+    stdout = "frame:0    pts:0       pts_time:0\nlavfi.r128.S=-20.0\n"
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout, EBUR128_STDERR))
+    samples, i, lra = measure.run_ebur128("x.mp3")
+    assert samples == [(0.0, -20.0)]
+    assert (i, lra) == (-28.4, 10.6)
+
+
+def test_run_ebur128_raises_on_nonzero_exit(monkeypatch):
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "Invalid data found"))
+    with pytest.raises(measure.FfmpegError) as e:
+        measure.run_ebur128("broken.mp3")
+    assert "Invalid data found" in str(e.value)
