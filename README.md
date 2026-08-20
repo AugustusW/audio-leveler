@@ -93,13 +93,23 @@ freeze those recordings' characteristics along with them.
 - **Speech only.** In music, dynamic range is the intent, not a defect.
 - **No noise reduction** in this version.
 - `--filter` has no automatic mode; see above.
-- More than two channels: the dual-mono check is skipped and the layout is kept.
-- The `speech` branch has been verified against one real recording. The
-  `segmented` branch has been exercised on synthetic material only — no real
-  drifting recording has been run through it yet.
+- **`segmented` does not yet work well.** On a synthetic 18 LU step between two
+  halves, none of ffmpeg's stock dynamics filters helped much: dynaudnorm
+  reached 16.4 LU, compand 16.9, speechnorm 17.5, against 18.5 unprocessed.
+  Correcting a level difference that large needs true segmented processing —
+  detect the boundary, normalise each part, concatenate — which this version does
+  not do. The branch is kept because `apply` always re-measures and will report
+  that nothing improved, but do not expect it to fix drifting material yet.
+- The `speech` branch has been verified against one real recording (spread
+  10.0 → 5.8 LU, confirmed by ear).
+- `drift` needs more than one window to mean anything. The window scales with
+  duration, but a source shorter than about two minutes still yields few windows.
 - Dual-mono detection is whole-file. A recording whose body is dual mono but
   whose intro is real stereo reports the low separation of the intro, which is
   the safe answer but not a precise one.
+- More than two channels: the dual-mono check is skipped. `--mono force` still
+  downmixes correctly using the layout's own coefficients.
+- The download cache in `~/.cache/audio-leveler` is never pruned.
 
 ## License
 

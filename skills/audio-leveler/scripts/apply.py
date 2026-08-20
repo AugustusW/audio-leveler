@@ -139,7 +139,11 @@ def build_chain(filter_name, *, mono, loudnorm_args):
 
 
 def measure_pass_args(target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
-    """第一段只量測。這一段回報的 normalization_type 永遠是 dynamic，不可拿來判斷。"""
+    """第一段只量測。這一段回報的 normalization_type 永遠是 dynamic，不可拿來判斷。
+
+    LRA=7 是 ffmpeg 的原廠值，在這裡只是佔位：第一段的輸出被丟棄，量測值不受這個
+    參數影響。真正要用的目標 LRA 由第一段的實測結果推導，見 loudnorm_target_lra。
+    """
     return "I={0}:TP={1}:LRA=7:print_format=json".format(target_lufs, target_tp)
 
 

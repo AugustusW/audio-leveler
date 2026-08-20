@@ -24,7 +24,16 @@ python3 <skill-dir>/scripts/cli.py apply <source> --filter speech|segmented|loud
 
 `<source>` is a local audio or video file, an Apple Podcasts episode link, or
 any URL yt-dlp can fetch. Downloads are cached by episode identity, so running
-`measure` and then `apply` on the same link downloads once.
+`measure` and then `apply` on the same link downloads once. The cache lives in
+`~/.cache/audio-leveler` and is never pruned — mention it if disk space matters.
+
+Other flags on `apply`:
+
+| Flag | Use it when |
+|---|---|
+| `--target-lufs` | The default −16 is unreachable (see exit 8 below), or the listener wants a different level. Accepts −40 to −5. |
+| `--mono auto\|force\|never` | `auto` downmixes only on detected dual mono. `force` is worth suggesting when `channel_separation_db` is high but not conclusive and speed matters — it roughly halves the render time and halves the file size. |
+| `--out` / `--force` | A specific destination, or replacing an existing file. |
 
 Drop `--json` for a human-readable report. Use `--json` when you are the one
 reading it.
@@ -40,7 +49,9 @@ The contract from `measure --json`:
 | `intra_lu` | Median of the per-6-minute max−min. Movement **within** a section. |
 | `integrated_lufs` | Overall loudness. −16 is the podcast convention. |
 | `dual_mono` | True when the two channels carry the same signal. |
+| `channel_separation_db` | How far the L−R difference sits below the programme. `null` means either a silent difference (true dual mono) or a source where the question does not apply. Around 25 dB usually means a mostly-dual-mono recording with one genuinely stereo section, such as an intro. |
 | `speech_ratio` | Fraction of samples above the silence gate. |
+| `window_sec` / `windows` | The statistics window used, and one entry per window. The window scales down for short sources. |
 
 ### Reading them
 
@@ -51,7 +62,15 @@ The contract from `measure --json`:
   at different volumes. `--filter speech`.
 - **`drift` clearly larger than `intra`** — each section is internally steady
   but the sections sit at different levels: recorded across several sittings,
-  or a change of room. `--filter segmented`.
+  or a change of room. `--filter segmented` is the nearest branch, **but measure
+  first and expect little**: on a synthetic 18 LU step none of ffmpeg's stock
+  dynamics filters helped much (dynaudnorm reached 16.4 LU, compand 16.9,
+  speechnorm 17.5, all from 18.5). Correcting a level difference that large
+  needs true segmented processing, which this version does not do. Say so rather
+  than promising a fix.
+- **`drift` is only meaningful with more than one window.** Check
+  `len(windows)`; with a single window `drift` is 0 by construction and says
+  nothing about the source.
 - **Both small but `integrated_lufs` far from the target** — nothing is
   unstable, the whole thing is simply at the wrong level. `--filter loudness`.
 
@@ -81,6 +100,16 @@ whichever one you get, unchanged:
 
 Never describe an unchanged or worse result as a success. The re-measurement
 exists precisely so that nobody has to take the tool's word for it.
+
+### When apply exits non-zero
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| 8 | The requested loudness cannot be reached without clipping, **or** the source is already perfectly flat. The message carries a target that does work. | Rerun with the `--target-lufs` value from the message. Do not silently pick a different number. |
+| 6 | Verification failed after rendering. | Report it; the output was discarded and the original is untouched. |
+| 7 | The output path is taken. | Ask before passing `--force`. |
+| 3 | ffmpeg or yt-dlp is missing. | Pass on the install command from the message. Do not install anything. |
+| 4 | The source is silent or too short to diagnose. | Say so; there is nothing to level. |
 
 ## Limits worth stating up front
 

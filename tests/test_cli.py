@@ -34,9 +34,27 @@ def test_format_report_states_dual_mono_finding():
     assert "dual mono" in cli.format_report(DIAG).lower()
 
 
+def _emoji_in(text):
+    """`ord(ch) < 0x1F000` 會放行 U+2705 ✅、U+26A0 ⚠、U+274C ❌——正好是最可能被
+    加進報告的那幾個。改為涵蓋箭號、雜項符號、装飾符與 variation selector。"""
+    ranges = ((0x2190, 0x2BFF), (0xFE00, 0xFE0F), (0x1F000, 0x1FAFF))
+    return [ch for ch in text if any(lo <= ord(ch) <= hi for lo, hi in ranges)]
+
+
 def test_format_report_has_no_emoji():
-    text = cli.format_report(DIAG)
-    assert all(ord(ch) < 0x1F000 for ch in text)
+    assert _emoji_in(cli.format_report(DIAG)) == []
+
+
+def test_emoji_guard_would_actually_catch_the_likely_offenders():
+    """守衛本身要有測試，否則放行了也沒人知道。"""
+    for ch in "✅⚠️❌→":
+        assert _emoji_in("status " + ch) != [], ch
+
+
+def test_comparison_report_has_no_emoji():
+    delta = {"before_lu": 10.0, "after_lu": 5.8, "delta_lu": -4.2,
+             "converged_pct": 42.0, "improved": True}
+    assert _emoji_in(cli.format_comparison(RESULT, DIAG, AFTER, delta)) == []
 
 
 def test_measure_command_prints_report(monkeypatch, capsys, tmp_path):

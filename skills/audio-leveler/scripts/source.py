@@ -7,6 +7,12 @@
 刻意的重複，見 spec ADR-2：為 183 行開一個共用發佈物過重。
 **Apple lookup API 或 yt-dlp 介面變動時，兩邊都要修。** 當兩邊因上游變動而各自
 修過一次以上時，回頭重新評估要不要抽成套件。
+
+**刻意與上游分歧之處**（合併上游改動時不要一起吃掉）：
+- `download_audio` 用 `--audio-format best` 而非上游的 `mp3`。上游餵的是轉錄，多一代
+  有損編碼無所謂；這裡的產出要再處理再編碼，opus 來源會變成三代。
+- `cache_dir()` 與 User-Agent 改成本專案名稱。
+- 多了 `fetch()`：依集數身分快取，因為 measure 與 apply 是兩次獨立呼叫。
 """
 import hashlib
 import json
@@ -206,8 +212,6 @@ def resolve_apple_podcast(url: str):
             "Apple Podcasts: no public media URL for this episode "
             "(subscriber-only content cannot be fetched)")
     return media, title
-
-
 
 
 def fetch(url, cache_root=None):
