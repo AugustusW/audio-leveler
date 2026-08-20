@@ -370,3 +370,34 @@ def test_probe_audio_prefers_the_stream_duration_when_present(monkeypatch):
     monkeypatch.setattr(measure.subprocess, "run",
                         lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
     assert measure.probe_audio("x.mp3") == (2, 100.0)
+
+
+def test_window_scales_down_for_short_material():
+    """6 分鐘的窗是為了「明顯大於一個話題段落」而選的。素材只有 2 分鐘時這個意圖
+    根本沒被滿足——整支塞進一個窗，drift 結構性地等於 0。
+
+    實測：2 分鐘、前後兩半差 18 LU 的素材，固定 6 分鐘窗給出 drift=0.00、
+    intra=18.55，SKILL.md 的規則會據此判成 speech，完全判反。
+    """
+    assert measure.auto_window_sec(3247.0) == 360.0     # 長素材維持 6 分鐘
+    assert measure.auto_window_sec(120.0) == 30.0       # 2 分鐘 -> 4 個窗
+    assert measure.auto_window_sec(600.0) == 150.0
+    assert measure.auto_window_sec(10.0) == 30.0        # 有下限，不會切到無意義的碎片
+
+
+def test_short_material_with_a_step_reports_drift_not_just_intra():
+    """同一支素材換成自動窗長之後，drift 必須看得見。"""
+    samples = ([(t, -20.0) for t in range(0, 60)] +
+               [(t, -38.0) for t in range(60, 120)])
+    d = measure.build_diagnosis(samples, integrated=-26.0, lra=18.0, duration=120.0,
+                                channels=1, dual_mono=False)
+    assert d["window_sec"] == 30.0
+    assert len(d["windows"]) == 4
+    assert d["drift_lu"] > d["intra_lu"]
+
+
+def test_explicit_window_still_wins():
+    samples = [(0.0, -20.0), (5.0, -18.0)]
+    d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=10.0,
+                                channels=1, dual_mono=False, window_sec=2.0)
+    assert d["window_sec"] == 2.0

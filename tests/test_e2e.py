@@ -57,27 +57,24 @@ def test_apply_segmented_branch_also_stays_linear(stepped_source, tmp_path):
     assert result["normalization_type"] == "linear"
 
 
-def test_apply_refuses_linear_on_a_source_with_no_true_peak_headroom(tmp_path):
-    """素材已經頂在滿刻度時，linear 不可能成立——工具要在算之前就講清楚，
-    並附上一個真的可用的目標值。"""
-    # 可行與否取決於波峰因數（input_tp - input_i），而它不隨增益改變：
-    # ceiling = -(crest) + target_tp，所以 crest < 14.5 dB 時 -16 LUFS 就不可能成立。
-    # 這支素材經 speechnorm 後 crest 約 14.5 dB，剛好落在不可行側。
-    hot = tmp_path / "hot.wav"
-    subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-         "-i", "anoisesrc=color=pink:duration=8:amplitude=0.5",
-         "-af", "volume='if(lt(t,4),1.0,0.1)':eval=frame,aformat=channel_layouts=stereo",
-         str(hot)],
-        check=True, timeout=120)
+def test_apply_refuses_an_unreachable_target_and_its_suggestion_works(stepped_source, tmp_path):
+    """可行與否取決於波峰因數：ceiling = input_i - input_tp + target_tp，而波峰因數
+    不隨增益改變。要拉到很大聲時，峰值會先撞到上限。
+
+    用目標值（而不是素材）來觸發這個條件，測試才不會依賴 anoisesrc 的隨機種子——
+    先前用「夠熱的素材」觸發，剛好卡在 14.5 dB 邊界上，時好時壞。
+    """
     with pytest.raises(apply.LinearNotPossible) as e:
-        apply.level(str(hot), "speech", tmp_path / "hot-leveled.mp3", mono=True)
+        apply.level(str(stepped_source), "speech", tmp_path / "unreachable.mp3",
+                    mono=True, target_lufs=-6.0)
     message = str(e.value)
     assert "--target-lufs" in message
+
     suggested = float(message.rsplit("--target-lufs", 1)[1].strip().rstrip("."))
     # 建議值必須真的可行：照抄一次就要成功，不能再撞同一則訊息
-    out = tmp_path / "hot-retry.mp3"
-    result = apply.level(str(hot), "speech", out, mono=True, target_lufs=suggested)
+    out = tmp_path / "retry.mp3"
+    result = apply.level(str(stepped_source), "speech", out,
+                         mono=True, target_lufs=suggested)
     assert result["normalization_type"] == "linear"
     assert out.exists()
 

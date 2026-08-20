@@ -37,8 +37,23 @@ def parse_short_term(stdout):
 ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = 20.0
 DEFAULT_WINDOW_SEC = 360.0
+MIN_WINDOW_SEC = 30.0
+TARGET_WINDOW_COUNT = 4
 # 低於這個幅度的收斂不算改善：接近重新編碼的量測雜訊，也低於可聞門檻。
 MIN_MEANINGFUL_LU = 0.5
+
+
+def auto_window_sec(duration_sec):
+    """依素材長度選統計窗長。
+
+    6 分鐘這個數字是為了「明顯大於一個話題段落」而選的。素材只有 2 分鐘時這個
+    意圖根本沒被滿足——整支塞進一個窗，drift 就結構性地等於 0，而 SKILL.md 的
+    「intra 大於 drift 就選 speech」會據此把跨段漂移判成段內起伏。
+
+    所以窗長要縮到至少切得出幾個窗，同時保留下限，免得切成無意義的碎片。長素材
+    仍然是 6 分鐘（54 分鐘的節目 duration/4 遠大於 360，被上限夾住）。
+    """
+    return max(MIN_WINDOW_SEC, min(DEFAULT_WINDOW_SEC, duration_sec / TARGET_WINDOW_COUNT))
 
 
 class InsufficientSignal(Exception):
@@ -98,8 +113,13 @@ def window_stats(samples, window_sec=DEFAULT_WINDOW_SEC):
 
 
 def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
-                    window_sec=DEFAULT_WINDOW_SEC, channel_separation_db=None):
-    """組裝診斷契約。純數字，不含任何決定——判斷在 SKILL.md。"""
+                    window_sec=None, channel_separation_db=None):
+    """組裝診斷契約。純數字，不含任何決定——判斷在 SKILL.md。
+
+    window_sec 留 None 表示依素材長度自動選（見 auto_window_sec）。
+    """
+    if window_sec is None:
+        window_sec = auto_window_sec(duration)
     kept = gate(samples, integrated)
     if len(kept) < 2:
         raise InsufficientSignal(
@@ -304,7 +324,7 @@ def detect_dual_mono(path, channels):
     return is_dual_mono(diff, program), channel_separation_db(diff, program)
 
 
-def diagnose(path, window_sec=DEFAULT_WINDOW_SEC):
+def diagnose(path, window_sec=None):
     """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
     channels, duration = probe_audio(path)
     samples, integrated, lra = run_ebur128(path)
