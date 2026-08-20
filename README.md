@@ -37,6 +37,8 @@ whoever is deciding.
   within a section — that distinguish faults needing different fixes.
 - **The scripts hold no judgement.** `measure.py` emits numbers, `apply.py` executes explicit
   parameters, and the decision lives in `SKILL.md` for the host model to make.
+- **The model reads numbers, not audio.** A whole episode is decided from a contract of roughly
+  400–800 tokens — the audio never goes near a model.
 - **Every render is checked.** `apply` re-measures its own output and reports converged,
   unchanged, or worse. An ineffective filter cannot be presented as a success.
 - **Stages compose.** `--filter segmented,speech` fixes level differences between sections and
@@ -178,6 +180,22 @@ executes explicit parameters, and deciding what the numbers mean happens in
 between. That split is why the thresholds are guidance rather than constants —
 they came from a small number of recordings, and freezing them in code would
 freeze those recordings' characteristics along with them.
+
+It also means the model's part is cheap. The audio is never sent anywhere: the
+model reads one diagnosis contract and answers with a `--filter` value. Measured
+contract sizes:
+
+| Source length | Windows | Contract | Approx. tokens |
+|---|---|---|---|
+| 10 minutes | 4 | 811 B | ~270 |
+| 54 minutes | 9 | 1.3 kB | ~440 |
+| 2 hours | 20 | 2.4 kB | ~815 |
+| 4 hours | 40 | 4.5 kB | ~1500 |
+
+The statistics window is capped at six minutes, so past roughly half an hour the
+contract grows by one entry per six minutes of audio. All the ffmpeg work — the
+measurement and the render — is plain Python driving ffmpeg, with no model
+involved.
 
 ## Known limits
 
