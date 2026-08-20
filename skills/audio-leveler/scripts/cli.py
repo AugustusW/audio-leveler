@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 
+import apply
 import measure
 
 EXIT_OK = 0
@@ -16,6 +17,8 @@ EXIT_BAD_INPUT = 2
 EXIT_MISSING_TOOL = 3
 EXIT_NO_SIGNAL = 4
 EXIT_FFMPEG = 5
+EXIT_LINEAR_LOST = 6
+EXIT_OUTPUT_EXISTS = 7
 
 
 def _fmt_duration(seconds):
@@ -59,6 +62,53 @@ def cmd_measure(args):
     return EXIT_OK
 
 
+def _verdict(delta):
+    """三種結局要講成三句話。把「幾乎沒動」講成「converged 0%」讀起來像成功。"""
+    if delta["improved"]:
+        return "converged {0:.0f}%".format(delta["converged_pct"])
+    if delta["delta_lu"] >= measure.MIN_MEANINGFUL_LU:
+        return ("the spread got worse ({0:+.1f} LU). The source is better left as it is, "
+                "or try a different filter.".format(delta["delta_lu"]))
+    return ("the spread is essentially unchanged. This filter did not address what is "
+            "wrong with this source; consider a different one.")
+
+
+def format_comparison(result, before, after, delta):
+    lines = [
+        "Filter: {0}{1}".format(result["filter"],
+                                " (downmixed to mono)" if result["mono"] else ""),
+        "loudnorm: linear, target LRA {0:.1f}".format(result["target_lra"]),
+        "",
+        "Short-term spread (p95 - p5):",
+        "  before: {0:.1f} LU".format(delta["before_lu"]),
+        "  after:  {0:.1f} LU".format(delta["after_lu"]),
+    ]
+    lines.append("  " + _verdict(delta))
+    lines += [
+        "",
+        "Integrated loudness: {0:.1f} -> {1:.1f} LUFS".format(
+            before["integrated_lufs"], after["integrated_lufs"]),
+        "Output: {0}".format(result["output_path"]),
+    ]
+    return "\n".join(lines)
+
+
+def cmd_apply(args):
+    path = _resolve_local(args.source)
+    before = measure.diagnose(path)
+    out_path = Path(args.out) if args.out else apply.default_output_path(path, from_url=False)
+    mono = {"auto": before["dual_mono"], "force": True, "never": False}[args.mono]
+    try:
+        result = apply.level(path, args.filter, out_path, mono=mono,
+                             target_lufs=args.target_lufs, force=args.force)
+    except apply.LinearModeLost:
+        Path(out_path).unlink(missing_ok=True)
+        raise
+    after = measure.diagnose(result["output_path"])
+    print(format_comparison(result, before, after, measure.improvement(before, after)))
+    return EXIT_OK
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="audio-leveler",
@@ -69,6 +119,19 @@ def build_parser():
     m.add_argument("--json", action="store_true",
                    help="emit the diagnosis contract as JSON for an LLM or a script")
     m.set_defaults(func=cmd_measure)
+
+    a = sub.add_parser("apply", help="apply an explicitly chosen filter, then re-measure")
+    a.add_argument("source", help="local audio or video file")
+    a.add_argument("--filter", required=True, choices=sorted(apply.FILTERS),
+                   help="which filter to apply; there is deliberately no 'auto' — "
+                        "without an LLM this tool does not guess")
+    a.add_argument("--out", help="output path (default: <source>-leveled.mp3 next to the source)")
+    a.add_argument("--target-lufs", type=float, default=apply.TARGET_LUFS,
+                   help="integrated loudness target (default -16, the podcast convention)")
+    a.add_argument("--mono", choices=["auto", "force", "never"], default="auto",
+                   help="auto downmixes only when the source is detected as dual mono")
+    a.add_argument("--force", action="store_true", help="overwrite an existing output file")
+    a.set_defaults(func=cmd_apply)
     return parser
 
 
@@ -85,6 +148,15 @@ def main(argv=None):
     except measure.InsufficientSignal as e:
         print(str(e), file=sys.stderr)
         return EXIT_NO_SIGNAL
+    except apply.LinearModeLost as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_LINEAR_LOST
+    except apply.OutputExists as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_OUTPUT_EXISTS
+    except apply.LoudnormParseError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_FFMPEG
     except measure.FfmpegError as e:
         print(str(e), file=sys.stderr)
         return EXIT_FFMPEG

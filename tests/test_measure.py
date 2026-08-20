@@ -243,3 +243,43 @@ def test_detect_dual_mono_runs_two_passes_and_compares(monkeypatch):
     monkeypatch.setattr(measure.subprocess, "run", fake_run)
     assert measure.detect_dual_mono("x.mp3", channels=2) is True
     assert len(calls) == 2
+
+
+def test_improvement_reports_convergence_ratio():
+    d = measure.improvement({"spread_lu": 10.0}, {"spread_lu": 5.8})
+    assert d["before_lu"] == 10.0
+    assert d["after_lu"] == 5.8
+    assert d["delta_lu"] == pytest.approx(-4.2)
+    assert d["converged_pct"] == pytest.approx(42.0)
+    assert d["improved"] is True
+
+
+def test_improvement_flags_no_change_as_not_improved():
+    d = measure.improvement({"spread_lu": 11.8}, {"spread_lu": 11.8})
+    assert d["improved"] is False
+    assert d["converged_pct"] == pytest.approx(0.0)
+
+
+def test_improvement_flags_regression():
+    d = measure.improvement({"spread_lu": 8.0}, {"spread_lu": 9.5})
+    assert d["improved"] is False
+    assert d["converged_pct"] < 0
+
+
+def test_improvement_handles_zero_before_without_dividing_by_zero():
+    d = measure.improvement({"spread_lu": 0.0}, {"spread_lu": 0.0})
+    assert d["converged_pct"] == 0.0
+
+
+def test_improvement_does_not_call_a_rounding_level_change_an_improvement():
+    """實測踩到的：11.77 -> 11.76 被判為 improved，報告印出「converged 0%」。
+
+    那句話讀起來像成功，但什麼也沒發生。低於可聞門檻的變化一律不算改善。
+    """
+    d = measure.improvement({"spread_lu": 11.77}, {"spread_lu": 11.76})
+    assert d["improved"] is False
+
+
+def test_improvement_requires_at_least_half_a_loudness_unit():
+    assert measure.improvement({"spread_lu": 10.0}, {"spread_lu": 9.6})["improved"] is False
+    assert measure.improvement({"spread_lu": 10.0}, {"spread_lu": 9.5})["improved"] is True

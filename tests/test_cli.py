@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -84,3 +85,102 @@ def test_measure_command_reports_silent_material(monkeypatch, capsys, tmp_path):
 def test_no_subcommand_prints_usage_and_fails(capsys):
     with pytest.raises(SystemExit):
         cli.main([])
+
+
+AFTER = dict(DIAG, spread_lu=5.8, integrated_lufs=-16.0, dual_mono=False, channels=1)
+RESULT = {"filter": "speech", "mono": True, "target_lra": 5.1,
+          "normalization_type": "linear", "output_path": "/tmp/x-leveled.mp3",
+          "first_pass": {}, "second_pass": {}}
+
+
+def test_format_comparison_states_before_after_and_percentage():
+    text = cli.format_comparison(RESULT, DIAG, AFTER,
+                                 {"before_lu": 10.0, "after_lu": 5.8, "delta_lu": -4.2,
+                                  "converged_pct": 42.0, "improved": True})
+    assert "10.0" in text and "5.8" in text and "42" in text
+
+
+def test_format_comparison_says_so_when_nothing_improved():
+    text = cli.format_comparison(RESULT, DIAG, DIAG,
+                                 {"before_lu": 10.0, "after_lu": 10.0, "delta_lu": 0.0,
+                                  "converged_pct": 0.0, "improved": False})
+    assert "unchanged" in text.lower()
+    assert "converged" not in text.lower()
+
+
+def test_apply_command_measures_before_and_after(monkeypatch, capsys, tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    seen = []
+
+    def fake_diagnose(path, window_sec=360.0):
+        seen.append(path)
+        return DIAG if len(seen) == 1 else AFTER
+
+    monkeypatch.setattr(cli.measure, "diagnose", fake_diagnose)
+    monkeypatch.setattr(cli.apply, "level",
+                        lambda *a, **k: dict(RESULT, output_path=str(tmp_path / "a-leveled.mp3")))
+    assert cli.main(["apply", str(src), "--filter", "speech"]) == 0
+    assert len(seen) == 2
+    assert "42" in capsys.readouterr().out
+
+
+def test_apply_command_requires_the_filter_flag(tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    with pytest.raises(SystemExit):
+        cli.main(["apply", str(src)])
+
+
+def test_apply_command_rejects_unknown_filter(tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    with pytest.raises(SystemExit):
+        cli.main(["apply", str(src), "--filter", "auto"])
+
+
+def test_apply_command_mono_never_overrides_detection(monkeypatch, tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    captured = {}
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+
+    def fake_level(path, filter_name, out_path, **kwargs):
+        captured.update(kwargs)
+        return dict(RESULT, output_path=str(out_path))
+
+    monkeypatch.setattr(cli.apply, "level", fake_level)
+    cli.main(["apply", str(src), "--filter", "speech", "--mono", "never"])
+    assert captured["mono"] is False
+
+
+def test_apply_command_deletes_the_output_when_linear_is_lost(monkeypatch, capsys, tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "a-leveled.mp3"
+
+    def fake_level(path, filter_name, out_path, **kwargs):
+        Path(out_path).write_bytes(b"bad render")
+        raise cli.apply.LinearModeLost("loudnorm fell back to 'dynamic' instead of linear")
+
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.apply, "level", fake_level)
+    assert cli.main(["apply", str(src), "--filter", "speech"]) == 6
+    assert not out.exists()
+    assert "dynamic" in capsys.readouterr().err
+
+
+def test_format_comparison_says_unchanged_rather_than_printing_negative_zero():
+    text = cli.format_comparison(RESULT, DIAG, DIAG,
+                                 {"before_lu": 11.77, "after_lu": 11.76, "delta_lu": -0.01,
+                                  "converged_pct": 0.08, "improved": False})
+    assert "-0.0" not in text
+    assert "unchanged" in text.lower()
+
+
+def test_format_comparison_calls_a_regression_worse_not_merely_unimproved():
+    text = cli.format_comparison(RESULT, DIAG, DIAG,
+                                 {"before_lu": 8.0, "after_lu": 9.5, "delta_lu": 1.5,
+                                  "converged_pct": -18.75, "improved": False})
+    assert "worse" in text.lower()
+    assert "+1.5" in text

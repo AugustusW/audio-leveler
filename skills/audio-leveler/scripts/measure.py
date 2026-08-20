@@ -37,6 +37,8 @@ def parse_short_term(stdout):
 ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = 20.0
 DEFAULT_WINDOW_SEC = 360.0
+# 低於這個幅度的收斂不算改善：接近重新編碼的量測雜訊，也低於可聞門檻。
+MIN_MEANINGFUL_LU = 0.5
 
 
 class InsufficientSignal(Exception):
@@ -276,3 +278,20 @@ def diagnose(path, window_sec=DEFAULT_WINDOW_SEC):
     samples, integrated, lra = run_ebur128(path)
     dual_mono = detect_dual_mono(path, channels)
     return build_diagnosis(samples, integrated, lra, duration, channels, dual_mono, window_sec)
+
+
+def improvement(before, after):
+    """處理前後的 spread 比對。收斂百分比才是成功指標，不是絕對值。
+
+    兩邊都用相對閘量測，母體才可比——固定閘會因為整體響度改變而讓母體不同，比出來
+    的數字沒有意義。
+
+    `improved` 要求至少 MIN_MEANINGFUL_LU 的收斂，不是單純 a < b。實測踩過：
+    11.77 -> 11.76 也會是「改善」，報告因此印出「converged 0%」——那句話讀起來
+    像成功，但什麼也沒發生。
+    """
+    b = before["spread_lu"]
+    a = after["spread_lu"]
+    pct = 0.0 if b == 0 else (b - a) / b * 100.0
+    return {"before_lu": b, "after_lu": a, "delta_lu": a - b,
+            "converged_pct": pct, "improved": (b - a) >= MIN_MEANINGFUL_LU}
