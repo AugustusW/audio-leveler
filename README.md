@@ -6,11 +6,13 @@ English | [繁體中文](./README.zh-TW.md)
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#install)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#install)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-skill%20%2B%20plugin-orange.svg)](https://claude.com/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-compatible-black.svg)](https://developers.openai.com/codex/skills)
 
-An agent skill — open [SKILL.md standard](https://developers.openai.com/codex/skills), built for
-[Claude Code](https://claude.com/claude-code) — that fixes podcasts, lectures, interviews and
+An agent skill — open [SKILL.md standard](https://developers.openai.com/codex/skills), works in
+[Claude Code](https://claude.com/claude-code) **and** [Codex](https://developers.openai.com/codex/skills) —
+that fixes podcasts, lectures, interviews and
 meeting recordings whose volume keeps going up and down. It **measures the loudness first**, then
 applies the stage that matches what is actually wrong, then **re-measures its own output** and
 says whether that worked.
@@ -64,7 +66,19 @@ python3 skills/audio-leveler/scripts/cli.py apply <source> --filter speech
 ```
 
 On Windows the interpreter is usually `python` or `py -3` rather than `python3`.
-Note that Windows is not part of the verified set — see [Status](#status).
+
+### As a Codex skill
+
+```bash
+git clone https://github.com/AugustusW/audio-leveler.git
+cp -r audio-leveler/skills/audio-leveler ~/.codex/skills/audio-leveler        # personal
+# or, per-project: cp -r audio-leveler/skills/audio-leveler <repo>/.codex/skills/audio-leveler
+```
+
+Invoke it with an `$audio-leveler` mention, or let Codex pick it implicitly when you ask to fix
+the volume of a recording. The download cache (`~/.cache/audio-leveler/`, or
+`C:\Users\<you>\.cache\audio-leveler\` on Windows) is shared with Claude Code — measure once,
+apply from either.
 
 `<source>` is a local audio or video file, an Apple Podcasts episode link, or
 any URL yt-dlp can fetch. Downloads are cached by episode identity, so measuring
