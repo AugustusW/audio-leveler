@@ -181,3 +181,65 @@ def test_run_ebur128_raises_on_nonzero_exit(monkeypatch):
     with pytest.raises(measure.FfmpegError) as e:
         measure.run_ebur128("broken.mp3")
     assert "Invalid data found" in str(e.value)
+
+
+def test_parse_astats_rms_takes_last_value():
+    stdout = ("frame:1    pts:1    pts_time:0.1\n"
+              "lavfi.astats.Overall.RMS_level=-40.0\n"
+              "frame:64   pts:262144 pts_time:5.94\n"
+              "lavfi.astats.Overall.RMS_level=-33.045916\n")
+    assert measure.parse_astats_rms(stdout) == pytest.approx(-33.045916)
+
+
+def test_parse_astats_rms_handles_inf():
+    stdout = "lavfi.astats.Overall.RMS_level=-inf\n"
+    assert measure.parse_astats_rms(stdout) == float("-inf")
+
+
+def test_parse_astats_rms_raises_when_absent():
+    with pytest.raises(measure.FfmpegError):
+        measure.parse_astats_rms("nothing here")
+
+
+def test_is_dual_mono_true_when_difference_is_silent():
+    # 實測 dual mono：差訊號 -inf、節目 -33.05
+    assert measure.is_dual_mono(float("-inf"), -33.045916) is True
+
+
+def test_is_dual_mono_false_for_real_stereo():
+    # 實測右聲道延遲 15ms：差 -59.47、節目 -33.06，相距 26.4 dB < 60
+    assert measure.is_dual_mono(-59.473987, -33.055873) is False
+
+
+def test_is_dual_mono_boundary_is_inclusive_at_margin():
+    assert measure.is_dual_mono(-90.0, -30.0) is True    # 正好 60 dB
+    assert measure.is_dual_mono(-89.9, -30.0) is False   # 59.9 dB
+
+
+def test_detect_dual_mono_short_circuits_for_mono_input(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("must not shell out for a 1-channel file")
+    monkeypatch.setattr(measure.subprocess, "run", explode)
+    assert measure.detect_dual_mono("x.mp3", channels=1) is False
+
+
+def test_detect_dual_mono_returns_false_for_more_than_two_channels(monkeypatch):
+    def explode(*a, **k):
+        raise AssertionError("must not shell out for a 5.1 file")
+    monkeypatch.setattr(measure.subprocess, "run", explode)
+    assert measure.detect_dual_mono("x.mp3", channels=6) is False
+
+
+def test_detect_dual_mono_runs_two_passes_and_compares(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        rms = "-inf" if "0.5*c0-0.5*c1" in " ".join(cmd) else "-33.0"
+        return subprocess.CompletedProcess(
+            cmd, 0, "lavfi.astats.Overall.RMS_level={0}\n".format(rms), "")
+
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run", fake_run)
+    assert measure.detect_dual_mono("x.mp3", channels=2) is True
+    assert len(calls) == 2

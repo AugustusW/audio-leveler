@@ -209,3 +209,62 @@ def run_ebur128(path):
         raise FfmpegError("ffmpeg ebur128 failed: {0}".format(p.stderr.strip()[-500:]))
     integrated, lra = parse_ebur128_summary(p.stderr)
     return parse_short_term(p.stdout), integrated, lra
+
+
+DUAL_MONO_MARGIN_DB = 60.0
+_RMS_PREFIX = "lavfi.astats.Overall.RMS_level="
+
+_DIFF_FILTER = "pan=mono|c0=0.5*c0-0.5*c1"
+_SUM_FILTER = "pan=mono|c0=0.5*c0+0.5*c1"
+_ASTATS_TAIL = ("astats=metadata=1:reset=0,"
+                "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-")
+
+
+def parse_astats_rms(stdout):
+    """astats 的 ametadata 輸出 -> 最後一筆 Overall RMS（dBFS）。
+
+    走 ametadata 而不是 grep astats 的 log 行，是因為 log 行帶
+    `[Parsed_astats_1 @ 0x...]` 前綴，位址每次執行都不一樣。
+    """
+    value = None
+    for line in stdout.splitlines():
+        if line.startswith(_RMS_PREFIX):
+            value = _to_float(line[len(_RMS_PREFIX):].strip())
+    if value is None:
+        raise FfmpegError("astats RMS not found in ffmpeg output")
+    return value
+
+
+def is_dual_mono(diff_rms_db, program_rms_db, margin_db=DUAL_MONO_MARGIN_DB):
+    """差訊號比節目低 margin_db 以上 -> 判為假立體聲。
+
+    用 L-R 差訊號而非比對兩聲道 RMS：RMS 是能量統計量，延遲一個聲道不改變能量，
+    所以明確可聽的立體聲兩聲道 RMS 也可能只差 0.0012 dB。任何寬到足以容忍有損
+    編碼誤差的容差，都會把真立體聲一起吞掉。
+
+    留 60 dB 而不要求 -inf，是因為來源若曾經有損編碼或重取樣，兩聲道可能不再
+    位元相同，但差異仍遠低於可聞範圍。
+    """
+    if math.isinf(diff_rms_db):
+        return True
+    if math.isinf(program_rms_db):
+        return False
+    return (program_rms_db - diff_rms_db) >= margin_db
+
+
+def _astats_rms(path, pan_filter):
+    p = subprocess.run(
+        ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", "{0},{1}".format(pan_filter, _ASTATS_TAIL), "-f", "null", "-"],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffmpeg astats failed: {0}".format(p.stderr.strip()[-500:]))
+    return parse_astats_rms(p.stdout)
+
+
+def detect_dual_mono(path, channels):
+    """只有雙聲道才需要偵測。單聲道無從談起；超過兩聲道 v0.1.0 不處理。"""
+    if channels != 2:
+        return False
+    require_tool("ffmpeg")
+    return is_dual_mono(_astats_rms(path, _DIFF_FILTER), _astats_rms(path, _SUM_FILTER))
