@@ -6,11 +6,13 @@
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#安裝)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#安裝)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-skill%20%2B%20plugin-orange.svg)](https://claude.com/claude-code)
+[![Codex](https://img.shields.io/badge/Codex-compatible-black.svg)](https://developers.openai.com/codex/skills)
 
 一個 agent skill——採開放 [SKILL.md 標準](https://developers.openai.com/codex/skills)，
-為 [Claude Code](https://claude.com/claude-code) 打造——用來修 podcast、演講、訪談、
+在 [Claude Code](https://claude.com/claude-code) **與** [Codex](https://developers.openai.com/codex/skills)
+都能用——用來修 podcast、演講、訪談、
 會議錄音那種「聲音忽大忽小」的問題。它**先量測響度**，再套用對症的處理階段，
 然後**重新量測自己的產出**，告訴你到底有沒有改善。
 
@@ -57,8 +59,19 @@ python3 skills/audio-leveler/scripts/cli.py measure <來源>
 python3 skills/audio-leveler/scripts/cli.py apply <來源> --filter speech
 ```
 
-Windows 上的直譯器通常是 `python` 或 `py -3`，不是 `python3`。另請注意 Windows
-不在已驗證的範圍內，見[狀態](#狀態)。
+Windows 上的直譯器通常是 `python` 或 `py -3`，不是 `python3`。
+
+### 當作 Codex skill 使用
+
+```bash
+git clone https://github.com/AugustusW/audio-leveler.git
+cp -r audio-leveler/skills/audio-leveler ~/.codex/skills/audio-leveler        # 個人
+# 或指定專案：cp -r audio-leveler/skills/audio-leveler <repo>/.codex/skills/audio-leveler
+```
+
+用 `$audio-leveler` 提及它，或直接說要修某個錄音的音量、讓 Codex 自己挑。下載快取
+（`~/.cache/audio-leveler/`，Windows 上是 `C:\Users\<你>\.cache\audio-leveler\`）
+與 Claude Code 共用——量測過一次，兩邊都能接著處理。
 
 `<來源>` 可以是本地音訊或影片檔、Apple Podcasts 單集連結，或任何 yt-dlp 抓得到的
 URL。下載會依集數身分快取，所以同一個連結先 measure 再 apply 只會下載一次。

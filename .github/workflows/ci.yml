@@ -7,11 +7,18 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows 納進來不是為了「支援更多平台」這種漂亮話：README 掛著 Windows badge，
+    # 就得真的在 Windows 上跑過。路徑處理與快取目錄是最可能出事的地方。
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # Windows 只跑頭尾兩版即可涵蓋語法與行為差異，中間版本由 Linux 覆蓋
+          - { os: windows-latest, python: "3.11" }
+          - { os: windows-latest, python: "3.12" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
