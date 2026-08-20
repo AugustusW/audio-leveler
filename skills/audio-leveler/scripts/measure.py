@@ -123,7 +123,12 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
         "percentiles": pcts,
         "windows": windows,
         "dual_mono": dual_mono,
-        "channel_separation_db": channel_separation_db,
+        # 分離度無限大（差訊號完全靜音）時回 null 而不是 inf：json.dumps 會把 inf
+        # 寫成裸的 Infinity，那不是合法 JSON，Node 的 JSON.parse 直接拒絕。
+        # dual_mono 已經把「完全相同」這件事講清楚了。
+        "channel_separation_db": (None if channel_separation_db is None
+                                  or math.isinf(channel_separation_db)
+                                  else channel_separation_db),
         "speech_ratio": len(kept) / len(samples) if samples else 0.0,
     }
 
@@ -183,18 +188,23 @@ def probe_audio(path):
     require_tool("ffprobe")
     p = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=channels,duration", "-of", "json", str(path)],
+         "-show_entries", "stream=channels,duration:format=duration",
+         "-of", "json", str(path)],
         capture_output=True, text=True, timeout=PROBE_TIMEOUT_SEC)
     if p.returncode != 0:
         raise FfmpegError("ffprobe failed: {0}".format(p.stderr.strip()[:300]))
     try:
-        streams = json.loads(p.stdout).get("streams") or []
+        payload = json.loads(p.stdout)
     except ValueError as e:
         raise FfmpegError("ffprobe returned unparsable JSON: {0}".format(e))
+    streams = payload.get("streams") or []
     if not streams:
         raise FfmpegError("no audio stream found in {0}".format(path))
     s = streams[0]
-    return int(s.get("channels") or 0), float(s.get("duration") or 0.0)
+    # webm（yt-dlp 抓 YouTube 的常見容器）的 stream entry 沒有 duration，只有容器層有。
+    # 沒有這個 fallback，報告會若無其事地印出 0:00:00。
+    duration = s.get("duration") or (payload.get("format") or {}).get("duration") or 0.0
+    return int(s.get("channels") or 0), float(duration)
 
 
 def run_ebur128(path):

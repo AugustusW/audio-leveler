@@ -50,7 +50,13 @@ def max_linear_target_lufs(first_pass, target_tp=TARGET_TP):
 
     這只是三個前提中的一個，見 linear_is_possible。
     """
-    return float(first_pass["input_i"]) + (target_tp - float(first_pass["input_tp"]))
+    input_i = float(first_pass["input_i"])
+    input_tp = float(first_pass["input_tp"])
+    if not (math.isfinite(input_i) and math.isfinite(input_tp)):
+        raise LinearNotPossible(
+            "this source measures {0} LUFS at {1} dBTP, which leaves nothing to "
+            "normalise against — it is most likely silent.".format(input_i, input_tp))
+    return input_i + (target_tp - input_tp)
 
 
 def suggested_target_lufs(first_pass, target_tp=TARGET_TP):

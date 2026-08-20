@@ -6,6 +6,7 @@ LLM 讀 measure 的數字後決定要不要 apply、用哪條濾鏡。
 """
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -18,8 +19,31 @@ EXIT_BAD_INPUT = 2
 EXIT_MISSING_TOOL = 3
 EXIT_NO_SIGNAL = 4
 EXIT_FFMPEG = 5
-EXIT_LINEAR_LOST = 6
+EXIT_LINEAR_LOST = 6        # linear 驗證事後失敗，換參數也未必救得回來
 EXIT_OUTPUT_EXISTS = 7
+EXIT_LINEAR_IMPOSSIBLE = 8  # 第一段就知道不可行，訊息附可用的 --target-lufs
+
+
+TARGET_LUFS_MIN = -40.0
+TARGET_LUFS_MAX = -5.0
+
+
+def _finite_target(text):
+    """argparse type：目標響度必須是有限值且落在合理範圍。
+
+    argparse(type=float) 本身收 nan/inf，而工具自己也可能產生這種建議——降混後
+    全靜音的素材會讓上限算成 nan，訊息寫「rerun with --target-lufs nan」，照抄
+    就送進 ffmpeg 了。
+    """
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(
+            "target loudness must be a finite number, got {0}".format(text))
+    if not (TARGET_LUFS_MIN <= value <= TARGET_LUFS_MAX):
+        raise argparse.ArgumentTypeError(
+            "target loudness {0} is outside the sensible range {1} to {2} LUFS".format(
+                value, TARGET_LUFS_MIN, TARGET_LUFS_MAX))
+    return value
 
 
 def _fmt_duration(seconds):
@@ -149,7 +173,7 @@ def build_parser():
                    help="which filter to apply; there is deliberately no 'auto' — "
                         "without an LLM this tool does not guess")
     a.add_argument("--out", help="output path (default: <source>-leveled.mp3 next to the source)")
-    a.add_argument("--target-lufs", type=float, default=apply.TARGET_LUFS,
+    a.add_argument("--target-lufs", type=_finite_target, default=apply.TARGET_LUFS,
                    help="integrated loudness target (default -16, the podcast convention)")
     a.add_argument("--mono", choices=["auto", "force", "never"], default="auto",
                    help="auto downmixes only when the source is detected as dual mono")
@@ -176,7 +200,7 @@ def main(argv=None):
         return EXIT_NO_SIGNAL
     except apply.LinearNotPossible as e:
         print(str(e), file=sys.stderr)
-        return EXIT_LINEAR_LOST
+        return EXIT_LINEAR_IMPOSSIBLE
     except apply.LinearModeLost as e:
         print(str(e), file=sys.stderr)
         return EXIT_LINEAR_LOST

@@ -272,3 +272,50 @@ def test_apply_still_proceeds_when_force_is_given(monkeypatch, capsys, tmp_path)
                         lambda *a, **k: dict(RESULT, output_path=str(out)))
     assert cli.main(["apply", str(src), "--filter", "speech", "--out", str(out),
                      "--force"]) == 0
+
+
+def test_apply_rejects_a_non_finite_target(tmp_path):
+    """argparse(type=float) 收 nan/inf，而工具自己也可能產生這種建議：
+    降混後全靜音的素材會讓 max_linear_target_lufs 算出 -inf + inf = nan，
+    訊息就會寫「rerun with --target-lufs nan」，照抄還真的會送進 ffmpeg。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    for value in ("nan", "inf", "-inf"):
+        with pytest.raises(SystemExit):
+            cli.main(["apply", str(src), "--filter", "speech", "--target-lufs", value])
+
+
+def test_apply_rejects_a_target_outside_the_sane_band(tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    for value in ("-60", "0"):
+        with pytest.raises(SystemExit):
+            cli.main(["apply", str(src), "--filter", "speech", "--target-lufs", value])
+
+
+def test_apply_accepts_targets_inside_the_band(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.apply, "level",
+                        lambda *a, **k: dict(RESULT, output_path=str(tmp_path / "o.mp3")))
+    assert cli.main(["apply", str(src), "--filter", "speech", "--target-lufs", "-18.1"]) == 0
+
+
+def test_impossible_and_lost_linear_get_distinct_exit_codes(monkeypatch, tmp_path):
+    """兩者要的後續動作不同：一個換 target 就能重試，一個不行。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+
+    monkeypatch.setattr(cli.apply, "level",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            cli.apply.LinearNotPossible("ceiling is -18.1")))
+    retryable = cli.main(["apply", str(src), "--filter", "speech"])
+
+    monkeypatch.setattr(cli.apply, "level",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            cli.apply.LinearModeLost("fell back to dynamic")))
+    not_retryable = cli.main(["apply", str(src), "--filter", "speech"])
+
+    assert retryable != not_retryable

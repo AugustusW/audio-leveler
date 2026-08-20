@@ -323,3 +323,50 @@ def test_build_diagnosis_records_the_window_length_it_used():
     d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=2.0,
                                 channels=1, dual_mono=False, window_sec=120.0)
     assert d["window_sec"] == 120.0
+
+
+def test_diagnosis_json_has_no_non_standard_constants():
+    """契約在兩份 README 都被描述成「給模型或腳本讀的」，那它就得是合法 JSON。
+
+    dual mono 的分離度是 float('inf')，json.dumps 會寫出裸的 Infinity——Python
+    自己讀得回來，Node 的 JSON.parse 直接拒絕，jq 則悄悄轉成 1.8e308。
+    """
+    samples = [(0.0, -20.0), (1.0, -18.0)]
+    d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=2.0,
+                                channels=2, dual_mono=True, window_sec=10.0,
+                                channel_separation_db=float("inf"))
+    text = json.dumps(d)
+
+    def reject(constant):
+        raise AssertionError("非標準 JSON 常數: " + constant)
+
+    json.loads(text, parse_constant=reject)
+
+
+def test_dual_mono_separation_is_null_rather_than_infinity():
+    samples = [(0.0, -20.0), (1.0, -18.0)]
+    d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=2.0,
+                                channels=2, dual_mono=True, window_sec=10.0,
+                                channel_separation_db=float("inf"))
+    assert d["channel_separation_db"] is None
+    assert d["dual_mono"] is True
+
+
+def test_probe_audio_falls_back_to_container_duration(monkeypatch):
+    """webm 的 stream entry 沒有 duration，而 webm 正是 yt-dlp 抓 YouTube 的常見容器。
+    少了 fallback，報告會若無其事地印出 0:00:00。"""
+    payload = json.dumps({"streams": [{"channels": 1}],
+                          "format": {"duration": "612.345"}})
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert measure.probe_audio("x.webm") == (1, 612.345)
+
+
+def test_probe_audio_prefers_the_stream_duration_when_present(monkeypatch):
+    payload = json.dumps({"streams": [{"channels": 2, "duration": "100.0"}],
+                          "format": {"duration": "999.0"}})
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, payload, ""))
+    assert measure.probe_audio("x.mp3") == (2, 100.0)
