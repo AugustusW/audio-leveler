@@ -241,3 +241,34 @@ def test_format_report_omits_separation_for_mono_sources():
 def test_format_report_names_the_window_length_actually_used():
     diag = dict(DIAG, window_sec=120.0)
     assert "2-minute" in cli.format_report(diag)
+
+
+def test_apply_refuses_an_existing_output_before_doing_any_work(monkeypatch, tmp_path):
+    """輸出檔已存在時要在下載與量測之前就停。
+
+    apply.level 內部也擋，但那要等下載完（URL 來源可能是 75MB）又量測完（30 秒）
+    才會撞到——一個開頭就能知道的答案不該讓人等那麼久。
+    """
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "taken.mp3"
+    out.write_bytes(b"old")
+
+    def explode(*a, **k):
+        raise AssertionError("must not resolve or measure when the output is taken")
+
+    monkeypatch.setattr(cli, "_resolve_source", explode)
+    monkeypatch.setattr(cli.measure, "diagnose", explode)
+    assert cli.main(["apply", str(src), "--filter", "speech", "--out", str(out)]) == 7
+
+
+def test_apply_still_proceeds_when_force_is_given(monkeypatch, capsys, tmp_path):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "taken.mp3"
+    out.write_bytes(b"old")
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.apply, "level",
+                        lambda *a, **k: dict(RESULT, output_path=str(out)))
+    assert cli.main(["apply", str(src), "--filter", "speech", "--out", str(out),
+                     "--force"]) == 0

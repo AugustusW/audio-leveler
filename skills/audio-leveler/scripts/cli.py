@@ -112,6 +112,10 @@ def format_comparison(result, before, after, delta):
 
 
 def cmd_apply(args):
+    # 明確給了 --out 就先擋掉已存在的檔案。apply.level 內部也擋，但那要等下載完
+    # （URL 來源可能是 75MB）又量測完（30 秒）才撞得到。
+    if args.out and not args.force:
+        apply.refuse_if_taken(Path(args.out))
     path, from_url = _resolve_source(args.source)
     before = measure.diagnose(path)
     out_path = (Path(args.out) if args.out

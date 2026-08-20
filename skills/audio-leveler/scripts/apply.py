@@ -136,6 +136,13 @@ def default_output_path(source, from_url, cwd=None):
     return base / "{0}{1}".format(stem, OUTPUT_SUFFIX)
 
 
+def refuse_if_taken(out_path):
+    """輸出檔已存在就拒絕。分成獨立函式，是為了讓呼叫端能在開工前先問一次。"""
+    if Path(out_path).exists():
+        raise OutputExists(
+            "output already exists: {0} (pass --force to overwrite)".format(out_path))
+
+
 def _run(cmd):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=measure.FFMPEG_TIMEOUT_SEC)
     if p.returncode != 0:
@@ -150,9 +157,8 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
     這個函式不決定 filter_name 也不決定 mono——兩者都由呼叫端明確給定。
     """
     out_path = Path(out_path)
-    if out_path.exists() and not force:
-        raise OutputExists(
-            "output already exists: {0} (pass --force to overwrite)".format(out_path))
+    if not force:
+        refuse_if_taken(out_path)
     measure.require_tool("ffmpeg")
 
     chain1 = build_chain(filter_name, mono=mono,
