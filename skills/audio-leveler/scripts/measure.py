@@ -2,8 +2,11 @@
 
 判斷（該用哪條濾鏡、要不要處理）一律在 SKILL.md 交給宿主 LLM，見 spec ADR-4。
 """
+import json
 import math
+import shutil
 import statistics
+import subprocess
 
 _S_PREFIX = "lavfi.r128.S="
 _PTS_MARKER = "pts_time:"
@@ -34,6 +37,39 @@ def parse_short_term(stdout):
 ABSOLUTE_GATE_LUFS = -70.0
 RELATIVE_GATE_LU = 20.0
 DEFAULT_WINDOW_SEC = 360.0
+MIN_WINDOW_SEC = 30.0
+TARGET_WINDOW_COUNT = 4
+# 增益整形用的窗：診斷窗要大才分得出 drift 與 intra，增益窗要細才追得上變化
+MIN_GAIN_WINDOW_SEC = 5.0
+MAX_GAIN_WINDOW_SEC = 120.0
+TARGET_GAIN_WINDOW_COUNT = 24
+# 低於這個幅度的收斂不算改善：接近重新編碼的量測雜訊，也低於可聞門檻。
+MIN_MEANINGFUL_LU = 0.5
+
+
+def auto_window_sec(duration_sec):
+    """依素材長度選統計窗長。
+
+    6 分鐘這個數字是為了「明顯大於一個話題段落」而選的。素材只有 2 分鐘時這個
+    意圖根本沒被滿足——整支塞進一個窗，drift 就結構性地等於 0，而 SKILL.md 的
+    「intra 大於 drift 就選 speech」會據此把跨段漂移判成段內起伏。
+
+    所以窗長要縮到至少切得出幾個窗，同時保留下限，免得切成無意義的碎片。長素材
+    仍然是 6 分鐘（54 分鐘的節目 duration/4 遠大於 360，被上限夾住）。
+    """
+    return max(MIN_WINDOW_SEC, min(DEFAULT_WINDOW_SEC, duration_sec / TARGET_WINDOW_COUNT))
+
+
+def gain_window_sec(duration_sec):
+    """分段增益整形用的窗長，刻意遠細於診斷窗。
+
+    診斷窗要夠大才分得出「段落之間」與「段落之內」；增益窗要夠細才追得上實際的
+    變化。同一個值行不通：實測 2 分鐘素材用 30 秒窗（4 個）做整形，三點平滑把
+    ±9 dB 的修正抹到中間只剩 ±3 dB，drift 只從 18.4 降到 12.3；用 5 秒窗（24 個）
+    才降到 0。
+    """
+    return max(MIN_GAIN_WINDOW_SEC,
+               min(MAX_GAIN_WINDOW_SEC, duration_sec / TARGET_GAIN_WINDOW_COUNT))
 
 
 class InsufficientSignal(Exception):
@@ -93,8 +129,13 @@ def window_stats(samples, window_sec=DEFAULT_WINDOW_SEC):
 
 
 def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
-                    window_sec=DEFAULT_WINDOW_SEC):
-    """組裝診斷契約。純數字，不含任何決定——判斷在 SKILL.md。"""
+                    window_sec=None, channel_separation_db=None):
+    """組裝診斷契約。純數字，不含任何決定——判斷在 SKILL.md。
+
+    window_sec 留 None 表示依素材長度自動選（見 auto_window_sec）。
+    """
+    if window_sec is None:
+        window_sec = auto_window_sec(duration)
     kept = gate(samples, integrated)
     if len(kept) < 2:
         raise InsufficientSignal(
@@ -108,6 +149,7 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
     intras = [w["max"] - w["min"] for w in windows]
     return {
         "duration_sec": duration,
+        "window_sec": window_sec,
         "channels": channels,
         "integrated_lufs": integrated,
         "lra_lu": lra,
@@ -117,5 +159,218 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
         "percentiles": pcts,
         "windows": windows,
         "dual_mono": dual_mono,
+        # 分離度無限大（差訊號完全靜音）時回 null 而不是 inf：json.dumps 會把 inf
+        # 寫成裸的 Infinity，那不是合法 JSON，Node 的 JSON.parse 直接拒絕。
+        # dual_mono 已經把「完全相同」這件事講清楚了。
+        "channel_separation_db": (None if channel_separation_db is None
+                                  or math.isinf(channel_separation_db)
+                                  else channel_separation_db),
         "speech_ratio": len(kept) / len(samples) if samples else 0.0,
     }
+
+
+FFMPEG_TIMEOUT_SEC = 3600
+PROBE_TIMEOUT_SEC = 120
+
+INSTALL_HINT = {
+    "ffmpeg": "install with: brew install ffmpeg (macOS) or apt install ffmpeg (Debian/Ubuntu)",
+    "ffprobe": "ffprobe ships with ffmpeg — brew install ffmpeg (macOS) or apt install ffmpeg",
+}
+
+
+class MissingTool(Exception):
+    """必要的外部工具不在 PATH 上。本專案不自動安裝。"""
+
+
+class FfmpegError(Exception):
+    """ffmpeg / ffprobe 執行失敗，或輸出不是預期的形狀。"""
+
+
+def require_tool(name):
+    path = shutil.which(name)
+    if not path:
+        raise MissingTool("{0} not found — {1}".format(name, INSTALL_HINT.get(name, "")))
+    return path
+
+
+def _to_float(token):
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def parse_ebur128_summary(stderr):
+    """ebur128 的 stderr summary -> (integrated_LUFS, LRA_LU)
+
+    'LRA low:' 與 'LRA high:' 也以 LRA 開頭，所以比對整個 token 而非前綴。
+    """
+    integrated = lra = None
+    for line in stderr.splitlines():
+        parts = line.strip().split()
+        if len(parts) < 2:
+            continue
+        if parts[0] == "I:":
+            integrated = _to_float(parts[1])
+        elif parts[0] == "LRA:":
+            lra = _to_float(parts[1])
+    if integrated is None or lra is None:
+        raise FfmpegError("ebur128 summary not found in ffmpeg output")
+    return integrated, lra
+
+
+def probe_audio(path):
+    """(聲道數, 長度秒)。"""
+    require_tool("ffprobe")
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels,duration:format=duration",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=PROBE_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffprobe failed: {0}".format(p.stderr.strip()[:300]))
+    try:
+        payload = json.loads(p.stdout)
+    except ValueError as e:
+        raise FfmpegError("ffprobe returned unparsable JSON: {0}".format(e))
+    streams = payload.get("streams") or []
+    if not streams:
+        raise FfmpegError("no audio stream found in {0}".format(path))
+    s = streams[0]
+    # webm（yt-dlp 抓 YouTube 的常見容器）的 stream entry 沒有 duration，只有容器層有。
+    # 沒有這個 fallback，報告會若無其事地印出 0:00:00。
+    duration = s.get("duration") or (payload.get("format") or {}).get("duration") or 0.0
+    return int(s.get("channels") or 0), float(duration)
+
+
+def run_ebur128(path):
+    """跑一趟 ebur128，同時取回 short-term 序列與 integrated / LRA。
+
+    metadata 走 stdout（ametadata file=-），summary 走 stderr——兩者不互相污染，
+    所以一趟就夠，不需要為了 integrated 再跑一次。
+    """
+    require_tool("ffmpeg")
+    p = subprocess.run(
+        ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", "ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.S:file=-",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffmpeg ebur128 failed: {0}".format(p.stderr.strip()[-500:]))
+    integrated, lra = parse_ebur128_summary(p.stderr)
+    return parse_short_term(p.stdout), integrated, lra
+
+
+DUAL_MONO_MARGIN_DB = 60.0
+_RMS_PREFIX = "lavfi.astats.Overall.RMS_level="
+
+_DIFF_FILTER = "pan=mono|c0=0.5*c0-0.5*c1"
+_SUM_FILTER = "pan=mono|c0=0.5*c0+0.5*c1"
+_ASTATS_TAIL = ("astats=metadata=1:reset=0,"
+                "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-")
+
+
+def parse_astats_rms(stdout):
+    """astats 的 ametadata 輸出 -> 最後一筆 Overall RMS（dBFS）。
+
+    走 ametadata 而不是 grep astats 的 log 行，是因為 log 行帶
+    `[Parsed_astats_1 @ 0x...]` 前綴，位址每次執行都不一樣。
+    """
+    value = None
+    for line in stdout.splitlines():
+        if line.startswith(_RMS_PREFIX):
+            value = _to_float(line[len(_RMS_PREFIX):].strip())
+    if value is None:
+        raise FfmpegError("astats RMS not found in ffmpeg output")
+    return value
+
+
+def channel_separation_db(diff_rms_db, program_rms_db):
+    """節目訊號比 L-R 差訊號高多少 dB。越大代表兩聲道越像。
+
+    回報數字而不只是布林值，是因為中間地帶有意義：一支全片 dual mono、只有片頭
+    是真立體聲的節目，整檔會落在 25 dB 上下——那既不是「真立體聲」也不是「可以
+    安全降混」，判讀交給讀數字的人。
+    """
+    if math.isinf(diff_rms_db):
+        return float("inf")
+    if math.isinf(program_rms_db):
+        return 0.0
+    return program_rms_db - diff_rms_db
+
+
+def is_dual_mono(diff_rms_db, program_rms_db, margin_db=DUAL_MONO_MARGIN_DB):
+    """差訊號比節目低 margin_db 以上 -> 判為假立體聲。
+
+    用 L-R 差訊號而非比對兩聲道 RMS：RMS 是能量統計量，延遲一個聲道不改變能量，
+    所以明確可聽的立體聲兩聲道 RMS 也可能只差 0.0012 dB。任何寬到足以容忍有損
+    編碼誤差的容差，都會把真立體聲一起吞掉。
+
+    留 60 dB 而不要求 -inf，是因為來源若曾經有損編碼或重取樣，兩聲道可能不再
+    位元相同，但差異仍遠低於可聞範圍。
+    """
+    if math.isinf(diff_rms_db):
+        return True
+    if math.isinf(program_rms_db):
+        return False
+    return (program_rms_db - diff_rms_db) >= margin_db
+
+
+def _astats_rms(path, pan_filter):
+    p = subprocess.run(
+        ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", "{0},{1}".format(pan_filter, _ASTATS_TAIL), "-f", "null", "-"],
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise FfmpegError("ffmpeg astats failed: {0}".format(p.stderr.strip()[-500:]))
+    return parse_astats_rms(p.stdout)
+
+
+def detect_dual_mono(path, channels):
+    """-> (是否為假立體聲, 兩聲道分離度 dB)
+
+    只有雙聲道才需要偵測。單聲道無從談起；超過兩聲道 v0.1.0 不處理，兩種情況的
+    分離度都回報 None。
+    """
+    if channels != 2:
+        return False, None
+    require_tool("ffmpeg")
+    diff = _astats_rms(path, _DIFF_FILTER)
+    program = _astats_rms(path, _SUM_FILTER)
+    return is_dual_mono(diff, program), channel_separation_db(diff, program)
+
+
+def analyse(path, window_sec=None):
+    """-> (診斷契約, 過閘後的 short-term 樣本)
+
+    分段增益整形需要比診斷窗細得多的窗，但沒必要為此再跑一趟 ebur128——樣本
+    本來就在手上，換個窗長重算即可。
+    """
+    channels, duration = probe_audio(path)
+    samples, integrated, lra = run_ebur128(path)
+    dual_mono, separation = detect_dual_mono(path, channels)
+    diagnosis = build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
+                                window_sec, channel_separation_db=separation)
+    return diagnosis, gate(samples, integrated)
+
+
+def diagnose(path, window_sec=None):
+    """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
+    return analyse(path, window_sec)[0]
+
+
+def improvement(before, after):
+    """處理前後的 spread 比對。收斂百分比才是成功指標，不是絕對值。
+
+    兩邊都用相對閘量測，母體才可比——固定閘會因為整體響度改變而讓母體不同，比出來
+    的數字沒有意義。
+
+    `improved` 要求至少 MIN_MEANINGFUL_LU 的收斂，不是單純 a < b。實測踩過：
+    11.77 -> 11.76 也會是「改善」，報告因此印出「converged 0%」——那句話讀起來
+    像成功，但什麼也沒發生。
+    """
+    b = before["spread_lu"]
+    a = after["spread_lu"]
+    pct = 0.0 if b == 0 else (b - a) / b * 100.0
+    return {"before_lu": b, "after_lu": a, "delta_lu": a - b,
+            "converged_pct": pct, "improved": (b - a) >= MIN_MEANINGFUL_LU}
