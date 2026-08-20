@@ -46,6 +46,15 @@ def _finite_target(text):
     return value
 
 
+def _filter_spec(text):
+    """argparse type：驗證 --filter 的組合，錯的話在解析階段就講清楚。"""
+    try:
+        apply.parse_stages(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return text
+
+
 def _fmt_duration(seconds):
     total = int(round(seconds))
     return "{0:d}:{1:02d}:{2:02d}".format(total // 3600, (total % 3600) // 60, total % 60)
@@ -141,12 +150,13 @@ def cmd_apply(args):
     if args.out and not args.force:
         apply.refuse_if_taken(Path(args.out))
     path, from_url = _resolve_source(args.source)
-    before = measure.diagnose(path)
+    before, samples = measure.analyse(path)
     out_path = (Path(args.out) if args.out
                 else apply.default_output_path(path, from_url=from_url))
     mono = {"auto": before["dual_mono"], "force": True, "never": False}[args.mono]
     try:
         result = apply.level(path, args.filter, out_path, mono=mono,
+                             samples=samples, duration_sec=before["duration_sec"],
                              target_lufs=args.target_lufs, force=args.force)
     except apply.LinearModeLost:
         Path(out_path).unlink(missing_ok=True)
@@ -169,9 +179,11 @@ def build_parser():
 
     a = sub.add_parser("apply", help="apply an explicitly chosen filter, then re-measure")
     a.add_argument("source", help="local file, an Apple Podcasts episode link, or any URL yt-dlp can fetch")
-    a.add_argument("--filter", required=True, choices=sorted(apply.FILTERS),
-                   help="which filter to apply; there is deliberately no 'auto' — "
-                        "without an LLM this tool does not guess")
+    a.add_argument("--filter", required=True, type=_filter_spec,
+                   help="which stages to apply, comma separated and applied in order "
+                        "(speech, segmented, loudness). 'segmented,speech' fixes drift "
+                        "between sections and swings within them. There is deliberately "
+                        "no 'auto' — without an LLM this tool does not guess")
     a.add_argument("--out", help="output path (default: <source>-leveled.mp3 next to the source)")
     a.add_argument("--target-lufs", type=_finite_target, default=apply.TARGET_LUFS,
                    help="integrated loudness target (default -16, the podcast convention)")

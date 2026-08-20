@@ -61,6 +61,7 @@ def test_measure_command_prints_report(monkeypatch, capsys, tmp_path):
     src = tmp_path / "a.mp3"
     src.write_bytes(b"x")
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     assert cli.main(["measure", str(src)]) == 0
     assert "spread" in capsys.readouterr().out.lower()
 
@@ -69,6 +70,7 @@ def test_measure_command_json_flag_emits_the_contract(monkeypatch, capsys, tmp_p
     src = tmp_path / "a.mp3"
     src.write_bytes(b"x")
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     assert cli.main(["measure", str(src), "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == DIAG
 
@@ -107,6 +109,14 @@ def test_no_subcommand_prints_usage_and_fails(capsys):
         cli.main([])
 
 
+SAMPLES = [(float(t), -20.0) for t in range(0, 20)]
+
+
+def _fake_analyse(diagnosis):
+    """cmd_apply 走 analyse()（要拿樣本做增益整形），量測後半仍走 diagnose()。"""
+    return lambda path, window_sec=None: (diagnosis, SAMPLES)
+
+
 AFTER = dict(DIAG, spread_lu=5.8, integrated_lufs=-16.0, dual_mono=False, channels=1)
 RESULT = {"filter": "speech", "mono": True, "target_lra": 5.1,
           "normalization_type": "linear", "output_path": "/tmp/x-leveled.mp3",
@@ -133,10 +143,15 @@ def test_apply_command_measures_before_and_after(monkeypatch, capsys, tmp_path):
     src.write_bytes(b"x")
     seen = []
 
-    def fake_diagnose(path, window_sec=360.0):
+    def fake_diagnose(path, window_sec=None):
         seen.append(path)
-        return DIAG if len(seen) == 1 else AFTER
+        return AFTER
 
+    def fake_analyse(path, window_sec=None):
+        seen.append(path)
+        return DIAG, SAMPLES
+
+    monkeypatch.setattr(cli.measure, "analyse", fake_analyse)
     monkeypatch.setattr(cli.measure, "diagnose", fake_diagnose)
     monkeypatch.setattr(cli.apply, "level",
                         lambda *a, **k: dict(RESULT, output_path=str(tmp_path / "a-leveled.mp3")))
@@ -164,6 +179,7 @@ def test_apply_command_mono_never_overrides_detection(monkeypatch, tmp_path):
     src.write_bytes(b"x")
     captured = {}
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
 
     def fake_level(path, filter_name, out_path, **kwargs):
         captured.update(kwargs)
@@ -184,6 +200,7 @@ def test_apply_command_deletes_the_output_when_linear_is_lost(monkeypatch, capsy
         raise cli.apply.LinearModeLost("loudnorm fell back to 'dynamic' instead of linear")
 
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     monkeypatch.setattr(cli.apply, "level", fake_level)
     assert cli.main(["apply", str(src), "--filter", "speech"]) == 6
     assert not out.exists()
@@ -211,6 +228,7 @@ def test_measure_accepts_a_url_source(monkeypatch, capsys, tmp_path):
     downloaded.write_bytes(b"x")
     monkeypatch.setattr(cli.source, "fetch", lambda url: (str(downloaded), "EP13"))
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     assert cli.main(["measure", "https://podcasts.apple.com/tw/podcast/x/id1?i=2"]) == 0
     assert "spread" in capsys.readouterr().out.lower()
 
@@ -234,6 +252,7 @@ def test_apply_from_url_writes_the_output_to_the_working_directory(monkeypatch, 
     monkeypatch.chdir(cwd)
     monkeypatch.setattr(cli.source, "fetch", lambda url: (str(downloaded), "EP13"))
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     captured = {}
 
     def fake_level(path, filter_name, out_path, **kwargs):
@@ -286,6 +305,7 @@ def test_apply_still_proceeds_when_force_is_given(monkeypatch, capsys, tmp_path)
     out = tmp_path / "taken.mp3"
     out.write_bytes(b"old")
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     monkeypatch.setattr(cli.apply, "level",
                         lambda *a, **k: dict(RESULT, output_path=str(out)))
     assert cli.main(["apply", str(src), "--filter", "speech", "--out", str(out),
@@ -315,6 +335,7 @@ def test_apply_accepts_targets_inside_the_band(tmp_path, monkeypatch):
     src = tmp_path / "a.mp3"
     src.write_bytes(b"x")
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
     monkeypatch.setattr(cli.apply, "level",
                         lambda *a, **k: dict(RESULT, output_path=str(tmp_path / "o.mp3")))
     assert cli.main(["apply", str(src), "--filter", "speech", "--target-lufs", "-18.1"]) == 0
@@ -325,6 +346,7 @@ def test_impossible_and_lost_linear_get_distinct_exit_codes(monkeypatch, tmp_pat
     src = tmp_path / "a.mp3"
     src.write_bytes(b"x")
     monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    monkeypatch.setattr(cli.measure, "analyse", _fake_analyse(DIAG))
 
     monkeypatch.setattr(cli.apply, "level",
                         lambda *a, **k: (_ for _ in ()).throw(

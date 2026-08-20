@@ -62,12 +62,10 @@ The contract from `measure --json`:
   at different volumes. `--filter speech`.
 - **`drift` clearly larger than `intra`** — each section is internally steady
   but the sections sit at different levels: recorded across several sittings,
-  or a change of room. `--filter segmented` is the nearest branch, **but measure
-  first and expect little**: on a synthetic 18 LU step none of ffmpeg's stock
-  dynamics filters helped much (dynaudnorm reached 16.4 LU, compand 16.9,
-  speechnorm 17.5, all from 18.5). Correcting a level difference that large
-  needs true segmented processing, which this version does not do. Say so rather
-  than promising a fix.
+  or a change of room. `--filter segmented`.
+- **Both large** — the level moves between sections *and* within them. Compose
+  the stages: `--filter segmented,speech`. They fix different things and the
+  order matters (between-section first).
 - **`drift` is only meaningful with more than one window.** Check
   `len(windows)`; with a single window `drift` is 0 by construction and says
   nothing about the source.
@@ -110,6 +108,28 @@ exists precisely so that nobody has to take the tool's word for it.
 | 7 | The output path is taken. | Ask before passing `--force`. |
 | 3 | ffmpeg or yt-dlp is missing. | Pass on the install command from the message. Do not install anything. |
 | 4 | The source is silent or too short to diagnose. | Say so; there is nothing to level. |
+
+## The stages
+
+| Stage | Fixes | How |
+|---|---|---|
+| `speech` | Swings **within** a section | `speechnorm`, then two-pass linear `loudnorm` |
+| `segmented` | Level differences **between** sections | A gain curve computed from the source's own per-window loudness, smoothed so the change is gradual, then two-pass linear `loudnorm` |
+| `loudness` | Nothing unstable; the level is simply wrong | Two-pass linear `loudnorm` only |
+
+`speech` and `segmented` compose — `--filter segmented,speech`. `loudness` means
+"no pre-stage" and cannot be combined.
+
+Measured on a source whose two halves differ by 18 LU (spread 18.5 LU):
+
+| | spread after | drift after |
+|---|---|---|
+| `speech` | 17.5 | 17.1 |
+| `segmented` | 4.0 | 0.0 |
+| `segmented,speech` | 3.9 | 0.0 |
+
+`segmented` boosts quiet passages, so exit 8 (target unreachable) is more likely
+with it than without. That is not a failure — follow the target in the message.
 
 ## Limits worth stating up front
 

@@ -65,11 +65,28 @@ Add `--json` to get the raw contract instead, for a model or a script to read.
 `--filter` is required and has no `auto`. That is deliberate: without something
 reading the measurement, this tool does not guess.
 
-| Filter | For | What it does |
+| Stage | For | What it does |
 |---|---|---|
 | `speech` | `intra` > `drift`: movement inside sections | `speechnorm`, then two-pass linear `loudnorm` |
-| `segmented` | `drift` > `intra`: sections at different levels | `dynaudnorm` over a ~2.5 minute window, then two-pass linear `loudnorm` |
+| `segmented` | `drift` > `intra`: sections at different levels | A gain curve built from the source's own per-window loudness, smoothed so the change is gradual, then two-pass linear `loudnorm` |
 | `loudness` | both small, level simply wrong | two-pass linear `loudnorm` only |
+
+Stages compose, in order: `--filter segmented,speech` fixes level differences
+between sections and swings within them. `loudness` means "no pre-stage" and
+cannot be combined.
+
+Measured on a source whose two halves differ by 18 LU (spread 18.5 LU):
+
+| | spread after | drift after |
+|---|---|---|
+| `speech` | 17.5 | 17.1 |
+| `segmented` | **4.0** | **0.0** |
+| `segmented,speech` | **3.9** | **0.0** |
+
+For comparison, none of ffmpeg's stock dynamics filters get near this on the same
+source: `dynaudnorm` reaches 16.4 LU at best, `compand` 16.9, `speechnorm` 17.5.
+They are built to move gain gently, and a sustained 18 dB correction is precisely
+what they are designed not to do.
 
 Every render finishes by measuring the output again and reporting one of three
 outcomes: converged by N%, essentially unchanged, or got worse. An unchanged or
@@ -93,13 +110,10 @@ freeze those recordings' characteristics along with them.
 - **Speech only.** In music, dynamic range is the intent, not a defect.
 - **No noise reduction** in this version.
 - `--filter` has no automatic mode; see above.
-- **`segmented` does not yet work well.** On a synthetic 18 LU step between two
-  halves, none of ffmpeg's stock dynamics filters helped much: dynaudnorm
-  reached 16.4 LU, compand 16.9, speechnorm 17.5, against 18.5 unprocessed.
-  Correcting a level difference that large needs true segmented processing —
-  detect the boundary, normalise each part, concatenate — which this version does
-  not do. The branch is kept because `apply` always re-measures and will report
-  that nothing improved, but do not expect it to fix drifting material yet.
+- `segmented` has been verified against synthetic step material, not yet against
+  a real drifting recording.
+- `segmented` boosts quiet passages, so the default −16 LUFS target is more often
+  unreachable with it. The tool says so and names a target that works.
 - The `speech` branch has been verified against one real recording (spread
   10.0 → 5.8 LU, confirmed by ear).
 - `drift` needs more than one window to mean anything. The window scales with

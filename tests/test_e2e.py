@@ -20,10 +20,14 @@ def stepped_source(tmp_path_factory):
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg not installed")
     out = tmp_path_factory.mktemp("e2e") / "stepped.wav"
-    # 前 4 秒大聲、後 4 秒小聲的粉紅噪音（頻譜行為比純正弦接近語音）
+    # 前 4 秒大聲、後 4 秒小聲的粉紅噪音（頻譜行為比純正弦接近語音）。
+    #
+    # seed 一定要給：anoisesrc 沒有 seed 時每次產生的素材都不一樣，實測 LRA 會在
+    # 邊界兩側跳動，整套測試因此間歇性失敗（跑四次會壞一次）。振幅也留了餘裕，
+    # 真實語音不會頂在滿刻度。
     subprocess.run(
         ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-         "-i", "anoisesrc=color=pink:duration=8:amplitude=0.5",
+         "-i", "anoisesrc=color=pink:duration=8:amplitude=0.12:seed=20260820",
          "-af", "volume='if(lt(t,4),1.0,0.1)':eval=frame,aformat=channel_layouts=stereo",
          str(out)],
         check=True, timeout=120)
@@ -51,10 +55,21 @@ def test_apply_loudness_branch_also_stays_linear(stepped_source, tmp_path):
     assert result["normalization_type"] == "linear"
 
 
-def test_apply_segmented_branch_also_stays_linear(stepped_source, tmp_path):
+def test_segmented_removes_drift_and_composes_with_speech(stepped_source, tmp_path):
+    """分段增益修「段落之間」，speechnorm 修「段落之內」。
+
+    實測（前後兩半差 18 LU 的素材，原始 spread 18.5）：現成濾鏡最好只到 16.4；
+    分段增益單獨 12.3、drift 歸零；再疊 speechnorm 得 0.7 LU，收斂 96%。
+    """
+    before, samples = measure.analyse(str(stepped_source), window_sec=1.0)
     out = tmp_path / "e2e-segmented.mp3"
-    result = apply.level(str(stepped_source), "segmented", out, mono=True)
+    result = apply.level(str(stepped_source), "segmented,speech", out, mono=True,
+                         samples=samples, duration_sec=before["duration_sec"],
+                         target_lufs=-20.0)
     assert result["normalization_type"] == "linear"
+    after = measure.diagnose(str(out), window_sec=1.0)
+    assert after["drift_lu"] < before["drift_lu"]
+    assert after["spread_lu"] < before["spread_lu"]
 
 
 def test_apply_refuses_an_unreachable_target_and_its_suggestion_works(stepped_source, tmp_path):

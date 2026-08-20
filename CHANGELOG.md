@@ -7,9 +7,14 @@ First release.
 - `measure`: reports short-term loudness spread, drift between windows, and
   intra-window swing, plus percentiles, integrated loudness and a dual-mono
   verdict. `--json` emits the contract for a model or a script to read.
-- `apply`: renders with an explicitly chosen filter (`speech`, `segmented`, or
-  `loudness`), always through a two-pass linear `loudnorm`, then re-measures the
-  output and reports whether the spread actually converged.
+- `apply`: renders with explicitly chosen stages (`speech`, `segmented`,
+  `loudness`, composable as `segmented,speech`), always through a two-pass linear
+  `loudnorm`, then re-measures the output and reports whether the spread actually
+  converged.
+- `segmented` builds a gain curve from the source's own per-window loudness and
+  applies it as a time-varying gain, smoothed so the change is gradual. On an
+  18 LU step it takes spread from 18.5 to 4.0 LU and drift to 0.0, where ffmpeg's
+  stock dynamics filters reach 16.4 at best.
 - Sources: local files, Apple Podcasts episode links, and anything yt-dlp can
   fetch. Downloads are cached by episode identity, so `measure` followed by
   `apply` on the same link downloads once.

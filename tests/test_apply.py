@@ -423,3 +423,129 @@ def test_render_names_the_output_format_explicitly(tmp_path, monkeypatch):
     apply.level(str(src), "speech", tmp_path / "o.mp3", mono=False)
     render = calls[1]
     assert render[render.index("-f") + 1] == "mp3"
+
+
+# 前 60 秒大聲、後 60 秒小聲，供增益整形使用
+SAMPLES_STEP = ([(float(t), -33.0) for t in range(0, 60)] +
+                [(float(t), -51.0) for t in range(60, 120)])
+
+WINDOWS_STEP = [
+    {"start_sec": 0.0, "median": -33.0, "min": -34.0, "max": -32.0},
+    {"start_sec": 10.0, "median": -33.0, "min": -34.0, "max": -32.0},
+    {"start_sec": 20.0, "median": -51.0, "min": -52.0, "max": -50.0},
+    {"start_sec": 30.0, "median": -51.0, "min": -52.0, "max": -50.0},
+]
+
+
+def test_gain_curve_levels_windows_against_each_other_not_an_absolute_target():
+    """分段增益的工作是消除段落之間的落差，不是設定絕對音量——後者是 loudnorm 的事。
+
+    以絕對目標為基準會讓素材在進 loudnorm 之前就被推到目標值、峰值一起上去，
+    餘裕耗盡，linear 就變得不可能（實測：推完 0.30 dBTP，-16 LUFS 已無法達成）。
+    改以素材自己的中位數為基準後，平均增益約為 0，峰值幾乎不動。
+    """
+    curve = apply.gain_curve(WINDOWS_STEP, smooth_span=1, max_gain_db=100.0)
+    gains = [g for _, g in curve]
+    # 基準是中位數 -42：大聲的窗降 9 dB，安靜的窗升 9 dB
+    assert [round(g, 1) for g in gains] == [-9.0, -9.0, 9.0, 9.0]
+    assert abs(sum(gains)) < 1e-9          # 整體不淨增益
+
+
+def test_gain_curve_is_capped_so_quiet_passages_do_not_lift_the_noise_floor():
+    """+31 dB 會把底噪一起推上來。上限不是任意選的：超過這個幅度，被放大的多半
+    已經不是語音而是房間噪音。"""
+    curve = apply.gain_curve(WINDOWS_STEP, smooth_span=1, max_gain_db=5.0)
+    assert max(g for _, g in curve) == 5.0
+    assert min(g for _, g in curve) == -5.0
+
+
+def test_gain_curve_smoothing_creates_the_ramp_across_the_step():
+    """平滑本身就是交叉淡入——不需要偵測邊界，也不需要對齊到靜音處。"""
+    curve = apply.gain_curve(WINDOWS_STEP, smooth_span=3, max_gain_db=100.0)
+    gains = [g for _, g in curve]
+    assert gains[0] < gains[1] < gains[2] < gains[3]      # 單調爬升，沒有硬跳
+    assert max(gains[i + 1] - gains[i] for i in range(3)) < 18.0   # 原始落差是 18
+
+
+def test_gain_curve_rejects_an_empty_window_list():
+    with pytest.raises(ValueError):
+        apply.gain_curve([])
+
+
+def test_volume_expression_is_piecewise_over_time():
+    expr = apply.build_volume_expression([(0.0, 6.0), (10.0, 0.0)], window_sec=10.0)
+    assert expr.startswith("volume=volume='")
+    assert "eval=frame" in expr
+    assert "lt(t,10.0)" in expr
+    assert "1.995262" in expr        # 10^(6/20)
+    assert "1.000000" in expr
+
+
+def test_volume_expression_for_a_single_window_is_a_constant():
+    expr = apply.build_volume_expression([(0.0, 6.0)], window_sec=10.0)
+    assert "if(" not in expr
+
+
+def test_filter_chain_accepts_composed_stages():
+    """分段增益修段落之間、speechnorm 修段落之內——兩者互補，不是二選一。
+    實測（18 LU 階梯）：單獨 34% / 5%，疊起來 96%。"""
+    assert apply.parse_stages("segmented,speech") == ["segmented", "speech"]
+    assert apply.parse_stages("speech") == ["speech"]
+
+
+def test_filter_chain_rejects_unknown_stages():
+    with pytest.raises(ValueError):
+        apply.parse_stages("segmented,magic")
+
+
+def test_loudness_cannot_be_combined_with_other_stages():
+    """loudness 的意思是「前面什麼都不加」，跟別的疊在一起沒有意義。"""
+    with pytest.raises(ValueError):
+        apply.parse_stages("loudness,speech")
+
+
+def test_build_chain_composes_stages_in_the_given_order(monkeypatch):
+    chain = apply.build_chain(["segmented", "speech"], mono=True,
+                              loudnorm_args="I=-16",
+                              gain_expression="volume=volume='1.5':eval=frame")
+    assert chain == ("aformat=channel_layouts=mono,"
+                     "volume=volume='1.5':eval=frame,"
+                     "speechnorm=e=12.5:r=0.0001:l=1:p=0.95,"
+                     "loudnorm=I=-16")
+
+
+def test_build_chain_requires_a_gain_expression_for_segmented():
+    with pytest.raises(ValueError):
+        apply.build_chain(["segmented"], mono=False, loudnorm_args="I=-16")
+
+
+def test_level_builds_the_gain_expression_from_the_supplied_samples(tmp_path, monkeypatch):
+    """增益曲線由素材自己的逐窗響度算出來，所以 level 需要拿到樣本。
+    呼叫端本來就會先 analyse 一次，不必為此多跑一趟 ffmpeg。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if not _is_measure_pass(cmd):
+            Path(cmd[-1]).write_bytes(b"rendered")
+        return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    result = apply.level(str(src), "segmented,speech", tmp_path / "o.mp3", mono=False,
+                         samples=SAMPLES_STEP, duration_sec=120.0)
+    chain = calls[0][calls[0].index("-af") + 1]
+    assert chain.startswith("volume=volume='")
+    assert "speechnorm=" in chain
+    assert chain.index("volume=") < chain.index("speechnorm=")   # 順序：段落間先於段落內
+    assert result["filter"] == "segmented,speech"
+
+
+def test_level_refuses_segmented_without_window_data(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    with pytest.raises(ValueError):
+        apply.level(str(src), "segmented", tmp_path / "o.mp3", mono=False)

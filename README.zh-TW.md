@@ -58,11 +58,26 @@ required to call it fake stereo, so a downmix could lose content.
 
 `--filter` 為必填，而且**刻意不提供 `auto`**：沒有東西在讀那些數字時，這個工具不猜。
 
-| 濾鏡 | 適用 | 做了什麼 |
+| 階段 | 適用 | 做了什麼 |
 |---|---|---|
 | `speech` | `intra` > `drift`：段落內起伏 | `speechnorm`，再兩段式 linear `loudnorm` |
-| `segmented` | `drift` > `intra`：段落間有落差 | `dynaudnorm`（約 2.5 分鐘窗），再兩段式 linear `loudnorm` |
+| `segmented` | `drift` > `intra`：段落間有落差 | 由素材自己的逐窗響度算出增益曲線，平滑後隨時間套用，再兩段式 linear `loudnorm` |
 | `loudness` | 兩者都小，只是整體音量不對 | 只做兩段式 linear `loudnorm` |
+
+階段可以疊，依序套用：`--filter segmented,speech` 同時修段落之間的落差與段落之內的
+起伏。`loudness` 的意思是「前面什麼都不加」，不能跟別的疊。
+
+實測（前後兩半差 18 LU 的素材，原始 spread 18.5 LU）：
+
+| | 處理後 spread | 處理後 drift |
+|---|---|---|
+| `speech` | 17.5 | 17.1 |
+| `segmented` | **4.0** | **0.0** |
+| `segmented,speech` | **3.9** | **0.0** |
+
+對照組：ffmpeg 內建的動態處理濾鏡在同一支素材上都差得遠——`dynaudnorm` 最好到
+16.4 LU、`compand` 16.9、`speechnorm` 17.5。它們被設計成溫和地移動增益，而持續
+18 dB 的修正正是它們刻意不做的事。
 
 每次產出結束後都會重新量測輸出檔，並回報三種結局之一：收斂 N%、幾乎沒有變化、
 變得更差。沒有改善就會如實這樣講——工具不會在沒有證據的情況下，把自己的產出說成
@@ -83,11 +98,9 @@ required to call it fake stereo, so a downmix could lose content.
 - **只處理語音。** 音樂的動態範圍是創作意圖，不是缺陷。
 - 這個版本**不做降噪**。
 - `--filter` 沒有自動模式，理由見上。
-- **`segmented` 目前效果不好。** 用前後兩半差 18 LU 的合成素材實測，ffmpeg 內建的
-  動態處理濾鏡都幫不上什麼忙：dynaudnorm 最好到 16.4 LU、compand 16.9、
-  speechnorm 17.5，原始為 18.5。要修正這麼大的段落落差，需要真正的分段處理
-  （偵測邊界、各自正規化、再接起來），這個版本沒有做。這條分支保留是因為 `apply`
-  一定會重新量測並如實回報沒有改善，但別期待它現在能修好漂移素材。
+- `segmented` 目前只在合成的階梯素材上驗證過，還沒跑過真實的漂移錄音。
+- `segmented` 會把安靜段落推上來，所以預設的 −16 LUFS 目標比較常達不到。工具會
+  明講並給出一個真的可用的目標值。
 - `speech` 分支在一支真實錄音上驗證過（spread 10.0 → 5.8 LU，聽感確認）。
 - `drift` 要有一個以上的窗才有意義。窗長會隨素材長度縮放，但短於約兩分鐘的素材
   仍然只切得出少數幾個窗。

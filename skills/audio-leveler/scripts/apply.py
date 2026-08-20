@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import statistics
 import subprocess
 from pathlib import Path
 
@@ -113,27 +114,109 @@ def verify_linear(second_pass):
 # 且在 stereo 上與舊寫法輸出完全相同（實測皆 -33.045916）。
 MONO_FILTER = "aformat=channel_layouts=mono"
 
+SMOOTH_SPAN = 3
+MAX_SEGMENT_GAIN_DB = 20.0
+
+# 各階段的前置濾鏡。segmented 沒有固定字串——它的增益曲線是由素材自己的逐窗
+# 響度算出來的，見 gain_curve。
 FILTERS = {
-    # 段落內快速起伏（麥克風距離變化、多人音量差）。EP13 實測有效。
+    # 段落內快速起伏（麥克風距離變化、多人音量差）。EP13 實測 10.0 -> 5.8 LU。
     "speech": "speechnorm=e=12.5:r=0.0001:l=1:p=0.95",
-    # 跨段漂移（分次錄製、換場景）。g=301 x f=500ms 約 2.5 分鐘的高斯窗，刻意遠長於
-    # 「調兇沒用」實測的那組（g=31，約 15 秒）。這條分支尚未有真實素材驗證。
-    "segmented": "dynaudnorm=g=301:f=500:m=10:p=0.95",
+    # 跨段漂移（分次錄製、換場景）。逐窗量測 -> 逐窗增益 -> 平滑 -> 隨時間變化的
+    # volume 表達式。不切檔、不接檔，平滑本身就是交叉淡入。
+    #
+    # 現成的動態處理濾鏡在這裡幫不上忙，實測（18 LU 階梯素材，原始 spread 18.5）：
+    # dynaudnorm 最好 16.4、compand 16.9、speechnorm 17.5。它們都被設計成溫和地
+    # 移動增益，而持續的大幅增益變化正是它們定義中的抽送感。
+    "segmented": None,
     # 只是整體音量不對，兩段式 loudnorm 就夠。
     "loudness": None,
 }
 
+# 前面什麼都不加，因此不能跟別的階段疊
+_EXCLUSIVE_STAGES = {"loudness"}
+# 需要由素材算出增益曲線的階段
+_NEEDS_GAIN = "segmented"
 
-def build_chain(filter_name, *, mono, loudnorm_args):
-    if filter_name not in FILTERS:
+
+def parse_stages(spec):
+    """`--filter` 的值 -> 階段清單。接受逗號分隔的組合。
+
+    分段增益修「段落之間」、speechnorm 修「段落之內」，兩者互補。實測（18 LU
+    階梯素材）：單獨 34% / 5% 收斂，疊起來 96%。單選的介面結構上拿不到這個結果。
+    """
+    stages = [tok.strip() for tok in spec.split(",") if tok.strip()]
+    if not stages:
+        raise ValueError("no filter given")
+    unknown = [st for st in stages if st not in FILTERS]
+    if unknown:
         raise ValueError("unknown filter '{0}' (choose from {1})".format(
-            filter_name, ", ".join(sorted(FILTERS))))
+            unknown[0], ", ".join(sorted(FILTERS))))
+    if len(stages) > 1:
+        clash = [st for st in stages if st in _EXCLUSIVE_STAGES]
+        if clash:
+            raise ValueError(
+                "'{0}' means no pre-filter at all, so it cannot be combined "
+                "with other stages".format(clash[0]))
+    if len(set(stages)) != len(stages):
+        raise ValueError("each filter may appear only once: {0}".format(spec))
+    return stages
+
+
+def gain_curve(windows, smooth_span=SMOOTH_SPAN, max_gain_db=MAX_SEGMENT_GAIN_DB):
+    """逐窗響度 -> [(起始秒, 增益 dB)]，已平滑並受上限約束。
+
+    基準是**素材自己的中位數**，不是絕對目標響度。這個階段的工作是消除段落之間
+    的落差；設定絕對音量是後面 loudnorm 的事。以絕對目標為基準會讓訊號在進
+    loudnorm 之前就被整體推高、峰值餘裕耗盡，linear 因此變得不可能（實測：推完
+    0.30 dBTP，-16 LUFS 已無法達成）。以自身中位數為基準時平均增益約為 0。
+
+    平滑就是交叉淡入：窗與窗之間的增益不會硬跳，所以既不需要偵測邊界，也不需要
+    把邊界對齊到靜音處。
+
+    上限存在是因為極安靜的段落若照補，被放大的多半已經不是語音而是房間噪音。
+    """
+    if not windows:
+        raise ValueError("gain_curve needs at least one window")
+    reference = statistics.median([w["median"] for w in windows])
+    raw = [reference - w["median"] for w in windows]
+    half = max(0, (smooth_span - 1) // 2)
+    smoothed = [statistics.mean(raw[max(0, i - half):i + half + 1])
+                for i in range(len(raw))]
+    return [(w["start_sec"], max(-max_gain_db, min(g, max_gain_db)))
+            for w, g in zip(windows, smoothed)]
+
+
+def build_volume_expression(curve, window_sec):
+    """增益曲線 -> ffmpeg volume 濾鏡的分段表達式（線性振幅）。"""
+    amps = [10 ** (db / 20.0) for _, db in curve]
+    expr = "{0:.6f}".format(amps[-1])
+    for i in range(len(curve) - 2, -1, -1):
+        expr = "if(lt(t,{0}),{1:.6f},{2})".format(
+            curve[i][0] + window_sec, amps[i], expr)
+    return "volume=volume='{0}':eval=frame".format(expr)
+
+
+def build_chain(stages, *, mono, loudnorm_args, gain_expression=None):
+    """組出完整的 filtergraph。stages 依給定順序串接。
+
+    單聲道一定在最前面：loudnorm 的 true-peak 超取樣成本隨聲道數，先降混讓 54
+    分鐘的素材由 128 秒降到 71 秒。
+    """
+    if isinstance(stages, str):
+        stages = parse_stages(stages)
     parts = []
     if mono:
         parts.append(MONO_FILTER)
-    pre = FILTERS[filter_name]
-    if pre:
-        parts.append(pre)
+    for stage in stages:
+        if stage == _NEEDS_GAIN:
+            if not gain_expression:
+                raise ValueError(
+                    "'{0}' needs a gain expression built from the source's own "
+                    "per-window loudness".format(_NEEDS_GAIN))
+            parts.append(gain_expression)
+        elif FILTERS[stage]:
+            parts.append(FILTERS[stage])
     parts.append("loudnorm={0}".format(loudnorm_args))
     return ",".join(parts)
 
@@ -192,18 +275,30 @@ def _run(cmd):
     return p
 
 
-def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
-          target_tp=TARGET_TP, force=False):
+def level(path, filter_spec, out_path, *, mono, samples=None, duration_sec=None,
+          target_lufs=TARGET_LUFS, target_tp=TARGET_TP, force=False):
     """兩段式執行：先量測、再以 linear=true 套固定增益。回傳執行摘要。
 
-    這個函式不決定 filter_name 也不決定 mono——兩者都由呼叫端明確給定。
+    這個函式不決定 filter_spec 也不決定 mono——兩者都由呼叫端明確給定。
+    `segmented` 需要 samples（呼叫端 analyse() 的第二個回傳值）才能算增益曲線；
+    那是機械運算（基準減實測），不是判斷。整形用的窗遠細於診斷窗，見
+    measure.gain_window_sec。
     """
+    stages = parse_stages(filter_spec)
+    gain_expression = None
+    if _NEEDS_GAIN in stages:
+        if not samples:
+            raise ValueError(
+                "'{0}' needs the short-term samples from analyse()".format(_NEEDS_GAIN))
+        win = measure.gain_window_sec(duration_sec or samples[-1][0])
+        gain_expression = build_volume_expression(
+            gain_curve(measure.window_stats(samples, win)), win)
     out_path = Path(out_path)
     if not force:
         refuse_if_taken(out_path)
     measure.require_tool("ffmpeg")
 
-    chain1 = build_chain(filter_name, mono=mono,
+    chain1 = build_chain(stages, mono=mono, gain_expression=gain_expression,
                          loudnorm_args=measure_pass_args(target_lufs, target_tp))
     first = parse_loudnorm_json(_run(
         ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
@@ -227,7 +322,7 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
     # 先算到暫存檔，驗證通過才搬到目標位置。直接寫目標會在驗證失敗時毀掉既有檔案
     # ——`--force` 是同意「取代」，不是同意「失敗就刪掉」。順帶讓非 --force 的
     # 路徑也不怕中途中斷。
-    chain2 = build_chain(filter_name, mono=mono,
+    chain2 = build_chain(stages, mono=mono, gain_expression=gain_expression,
                          loudnorm_args=apply_pass_args(first, target_lufs, target_tp))
     # 副檔名留在最後一段沒有用：ffmpeg 由檔名推 muxer，所以下面明確帶 -f mp3
     partial = out_path.with_name(out_path.name + ".partial")
@@ -242,7 +337,7 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
         if partial.exists():
             partial.unlink()
     return {
-        "filter": filter_name,
+        "filter": filter_spec,
         "mono": mono,
         "target_lra": loudnorm_target_lra(float(first["input_lra"])),
         "normalization_type": second["normalization_type"],

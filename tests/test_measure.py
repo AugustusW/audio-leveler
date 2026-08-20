@@ -401,3 +401,16 @@ def test_explicit_window_still_wins():
     d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=10.0,
                                 channels=1, dual_mono=False, window_sec=2.0)
     assert d["window_sec"] == 2.0
+
+
+def test_gain_window_is_much_finer_than_the_diagnosis_window():
+    """診斷窗要**大**才分得出 drift 與 intra；增益窗要**細**才追得上變化。
+    兩者同一個值是行不通的。
+
+    實測：2 分鐘素材用 30 秒診斷窗（4 個窗）做增益整形，三點平滑把 ±9 dB 的修正
+    抹成中間只剩 ±3 dB，drift 只從 18.4 降到 12.3。用 5 秒窗（24 個）才降到 0。
+    """
+    assert measure.auto_window_sec(120.0) == 30.0        # 診斷
+    assert measure.gain_window_sec(120.0) == 5.0         # 增益
+    assert measure.gain_window_sec(3247.0) == 120.0      # 上限
+    assert measure.gain_window_sec(30.0) == 5.0          # 下限

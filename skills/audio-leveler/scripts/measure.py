@@ -39,6 +39,10 @@ RELATIVE_GATE_LU = 20.0
 DEFAULT_WINDOW_SEC = 360.0
 MIN_WINDOW_SEC = 30.0
 TARGET_WINDOW_COUNT = 4
+# 增益整形用的窗：診斷窗要大才分得出 drift 與 intra，增益窗要細才追得上變化
+MIN_GAIN_WINDOW_SEC = 5.0
+MAX_GAIN_WINDOW_SEC = 120.0
+TARGET_GAIN_WINDOW_COUNT = 24
 # 低於這個幅度的收斂不算改善：接近重新編碼的量測雜訊，也低於可聞門檻。
 MIN_MEANINGFUL_LU = 0.5
 
@@ -54,6 +58,18 @@ def auto_window_sec(duration_sec):
     仍然是 6 分鐘（54 分鐘的節目 duration/4 遠大於 360，被上限夾住）。
     """
     return max(MIN_WINDOW_SEC, min(DEFAULT_WINDOW_SEC, duration_sec / TARGET_WINDOW_COUNT))
+
+
+def gain_window_sec(duration_sec):
+    """分段增益整形用的窗長，刻意遠細於診斷窗。
+
+    診斷窗要夠大才分得出「段落之間」與「段落之內」；增益窗要夠細才追得上實際的
+    變化。同一個值行不通：實測 2 分鐘素材用 30 秒窗（4 個）做整形，三點平滑把
+    ±9 dB 的修正抹到中間只剩 ±3 dB，drift 只從 18.4 降到 12.3；用 5 秒窗（24 個）
+    才降到 0。
+    """
+    return max(MIN_GAIN_WINDOW_SEC,
+               min(MAX_GAIN_WINDOW_SEC, duration_sec / TARGET_GAIN_WINDOW_COUNT))
 
 
 class InsufficientSignal(Exception):
@@ -324,13 +340,23 @@ def detect_dual_mono(path, channels):
     return is_dual_mono(diff, program), channel_separation_db(diff, program)
 
 
-def diagnose(path, window_sec=None):
-    """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
+def analyse(path, window_sec=None):
+    """-> (診斷契約, 過閘後的 short-term 樣本)
+
+    分段增益整形需要比診斷窗細得多的窗，但沒必要為此再跑一趟 ebur128——樣本
+    本來就在手上，換個窗長重算即可。
+    """
     channels, duration = probe_audio(path)
     samples, integrated, lra = run_ebur128(path)
     dual_mono, separation = detect_dual_mono(path, channels)
-    return build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
-                           window_sec, channel_separation_db=separation)
+    diagnosis = build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
+                                window_sec, channel_separation_db=separation)
+    return diagnosis, gate(samples, integrated)
+
+
+def diagnose(path, window_sec=None):
+    """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
+    return analyse(path, window_sec)[0]
 
 
 def improvement(before, after):
