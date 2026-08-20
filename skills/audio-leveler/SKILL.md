@@ -120,7 +120,7 @@ exists precisely so that nobody has to take the tool's word for it.
 | Stage | Fixes | How |
 |---|---|---|
 | `speech` | Swings **within** a section | `speechnorm`, then two-pass linear `loudnorm` |
-| `segmented` | Level differences **between** sections | A gain curve computed from the source's own per-window loudness, smoothed so the change is gradual, then two-pass linear `loudnorm` |
+| `segmented` | Level differences **between** sections | A gain curve computed from the source's own per-window loudness, interpolated between window centres so the level slides rather than steps, then two-pass linear `loudnorm` |
 | `loudness` | Nothing unstable; the level is simply wrong | Two-pass linear `loudnorm` only |
 
 `speech` and `segmented` compose — `--filter segmented,speech`. `loudness` means
@@ -136,6 +136,12 @@ Measured on a source whose two halves differ by 18 LU (spread 18.5 LU):
 
 `segmented` boosts quiet passages, so exit 8 (target unreachable) is more likely
 with it than without. That is not a failure — follow the target in the message.
+
+One caveat when reading its numbers: the gain ramps between windows rather than
+stepping, which costs a little measured convergence (5.1 LU rather than 3.9 on the
+reference step material) because the ramp itself sits inside the measurement. The
+stepped version scored better and sounded worse — it jumped 6 dB at a window edge.
+Do not read the smaller number as the better result here.
 
 ## Limits worth stating up front
 

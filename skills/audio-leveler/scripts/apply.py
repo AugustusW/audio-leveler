@@ -188,13 +188,43 @@ def gain_curve(windows, smooth_span=SMOOTH_SPAN, max_gain_db=MAX_SEGMENT_GAIN_DB
 
 
 def build_volume_expression(curve, window_sec):
-    """增益曲線 -> ffmpeg volume 濾鏡的分段表達式（線性振幅）。"""
-    amps = [10 ** (db / 20.0) for _, db in curve]
-    expr = "{0:.6f}".format(amps[-1])
-    for i in range(len(curve) - 2, -1, -1):
-        expr = "if(lt(t,{0}),{1:.6f},{2})".format(
-            curve[i][0] + window_sec, amps[i], expr)
-    return "volume=volume='{0}':eval=frame".format(expr)
+    """增益曲線 -> ffmpeg volume 濾鏡的表達式。
+
+    增益在**窗中心之間線性內插**（以 dB 計），不是每個窗一個定值。分段常數的寫法
+    會在窗邊界瞬間跳一階：實測 18 LU 的階梯素材，三點平滑後單階仍有 6 dB，而 6 dB
+    的瞬間跳動聽得出來——那正是這個工具要消滅的東西。平滑讓階變小，只有內插能讓
+    它變成斜坡。
+
+    每個窗的代表時間取**窗中心**：增益是整個窗的統計量，掛在中心比掛在起點誠實。
+    第一個窗中心之前與最後一個窗中心之後沒有東西可內插，維持定值。
+
+    在 dB 上內插而不是在振幅上，因為聽感是對數的；最後才用 pow(10, dB/20) 換回
+    振幅。整條表達式包在單引號內，ffmpeg 因此不會把裡面的逗號當成選項分隔。
+    """
+    if not curve:
+        raise ValueError("build_volume_expression needs at least one point")
+    points = [(start + window_sec / 2.0, db) for start, db in curve]
+
+    if len(points) == 1:
+        return _volume_filter("{0:.6f}".format(_amplitude(points[0][1])))
+
+    expr = "{0:.6f}".format(points[-1][1])
+    for i in range(len(points) - 2, -1, -1):
+        t0, g0 = points[i]
+        t1, g1 = points[i + 1]
+        slope = (g1 - g0) / (t1 - t0)
+        ramp = "{0:.6f}+{1:.6f}*(t-{2:.3f})".format(g0, slope, t0)
+        expr = "if(lt(t,{0:.3f}),{1},{2})".format(t1, ramp, expr)
+    expr = "if(lt(t,{0:.3f}),{1:.6f},{2})".format(points[0][0], points[0][1], expr)
+    return _volume_filter("pow(10,({0})/20)".format(expr))
+
+
+def _amplitude(db):
+    return 10.0 ** (db / 20.0)
+
+
+def _volume_filter(body):
+    return "volume=volume='{0}':eval=frame".format(body)
 
 
 def build_chain(stages, *, mono, loudnorm_args, gain_expression=None):

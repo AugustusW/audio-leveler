@@ -472,18 +472,19 @@ def test_gain_curve_rejects_an_empty_window_list():
         apply.gain_curve([])
 
 
-def test_volume_expression_is_piecewise_over_time():
+def test_volume_expression_is_a_time_varying_gain():
     expr = apply.build_volume_expression([(0.0, 6.0), (10.0, 0.0)], window_sec=10.0)
     assert expr.startswith("volume=volume='")
     assert "eval=frame" in expr
-    assert "lt(t,10.0)" in expr
-    assert "1.995262" in expr        # 10^(6/20)
-    assert "1.000000" in expr
+    assert "pow(10," in expr          # dB 上內插，最後才換回振幅
+    assert _gain_db_at(expr, 5.0) == pytest.approx(6.0, abs=0.01)
+    assert _gain_db_at(expr, 15.0) == pytest.approx(0.0, abs=0.01)
 
 
 def test_volume_expression_for_a_single_window_is_a_constant():
     expr = apply.build_volume_expression([(0.0, 6.0)], window_sec=10.0)
     assert "if(" not in expr
+    assert "1.995262" in expr          # 10^(6/20)
 
 
 def test_filter_chain_accepts_composed_stages():
@@ -584,3 +585,58 @@ def test_unknown_output_extension_is_refused_with_the_supported_list():
 def test_missing_extension_is_refused_rather_than_guessed():
     with pytest.raises(apply.UnsupportedOutputFormat):
         apply.encoder_args("out", mono=False)
+
+
+def _gain_db_at(expr, t):
+    """把 volume 表達式在時間 t 求值，換回 dB。用 Python 重現 ffmpeg 的語意。"""
+    import math
+    import re
+    body = expr[len("volume=volume='"):-len("':eval=frame")]
+    # pow(10\,X/20) -> 直接算 X
+    body = body.replace("\\,", ",")
+    scope = {"t": t, "pow": pow, "lt": lambda a, b: a < b,
+             "if": lambda c, a, b: a if c else b}
+    # if(a,b,c) 在 Python 是保留字，改名後求值
+    body = re.sub(r"\bif\(", "_if(", body)
+    scope["_if"] = scope.pop("if")
+    return 20.0 * math.log10(eval(body, {"__builtins__": {}}, scope))
+
+
+def test_gain_expression_ramps_between_windows_instead_of_stepping():
+    """平滑會把跳動變小，但不會把階梯變成斜坡。
+
+    實測：18 LU 的階梯素材，未平滑時單階跳 18.00 dB，三點平滑後仍有 6.00 dB——
+    而 6 dB 的瞬間跳動聽得出來（音量感覺上直接翻倍），正是這個工具要消滅的東西。
+    增益必須在窗與窗之間線性內插。
+    """
+    curve = [(0.0, -6.0), (10.0, 0.0), (20.0, 0.0)]
+    expr = apply.build_volume_expression(curve, window_sec=10.0)
+    # 兩個窗中心之間應該是連續爬升，不是在邊界瞬間跳
+    mid_early = _gain_db_at(expr, 6.0)
+    mid_late = _gain_db_at(expr, 9.0)
+    assert -6.0 < mid_early < mid_late < 0.0, (mid_early, mid_late)
+
+
+def test_gain_expression_has_no_audible_discontinuity():
+    """逐 0.1 秒掃過整條曲線，相鄰取樣之間的增益差必須遠小於可聞門檻。"""
+    windows = [{"start_sec": float(i * 5), "median": -33.0 if i < 12 else -51.0,
+                "min": -34.0, "max": -32.0} for i in range(24)]
+    curve = apply.gain_curve(windows, max_gain_db=100.0)
+    expr = apply.build_volume_expression(curve, window_sec=5.0)
+    samples = [_gain_db_at(expr, t / 10.0) for t in range(0, 1200)]
+    jumps = [abs(samples[i + 1] - samples[i]) for i in range(len(samples) - 1)]
+    assert max(jumps) < 0.5, "最大跳動 %.2f dB" % max(jumps)
+
+
+def test_gain_expression_holds_the_first_and_last_window_flat():
+    """第一個窗中心之前、最後一個窗中心之後沒有東西可以內插，維持定值。"""
+    curve = [(0.0, -6.0), (10.0, 6.0)]
+    expr = apply.build_volume_expression(curve, window_sec=10.0)
+    assert _gain_db_at(expr, 0.0) == pytest.approx(-6.0, abs=0.01)
+    assert _gain_db_at(expr, 20.0) == pytest.approx(6.0, abs=0.01)
+
+
+def test_single_window_gain_expression_is_a_constant():
+    expr = apply.build_volume_expression([(0.0, 3.0)], window_sec=10.0)
+    assert _gain_db_at(expr, 0.0) == pytest.approx(3.0, abs=0.01)
+    assert _gain_db_at(expr, 99.0) == pytest.approx(3.0, abs=0.01)
