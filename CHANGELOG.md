@@ -53,3 +53,9 @@ First release.
   before any work is done.
 - `SKILL.md` and both READMEs assumed `python3` exists. On Windows the
   interpreter is usually `python` or `py -3`.
+- The `segmented` gain now interpolates between window centres instead of holding
+  each window at a constant. Smoothing had reduced the step from 18 dB to 6 dB but
+  never removed it, and a 6 dB jump at a window edge is audible — the very artefact
+  this tool exists to remove. Measured convergence on the reference step material
+  drops from 3.9 to 5.1 LU as a result, because the ramp sits inside the window
+  being measured. The stepped version scored better and sounded worse.

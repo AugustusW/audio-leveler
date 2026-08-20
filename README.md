@@ -102,7 +102,7 @@ reading the measurement, this tool does not guess.
 | Stage | For | What it does |
 |---|---|---|
 | `speech` | `intra` > `drift`: movement inside sections | `speechnorm`, then two-pass linear `loudnorm` |
-| `segmented` | `drift` > `intra`: sections at different levels | A gain curve built from the source's own per-window loudness, smoothed so the change is gradual, then two-pass linear `loudnorm` |
+| `segmented` | `drift` > `intra`: sections at different levels | A gain curve built from the source's own per-window loudness, interpolated between window centres so the level slides rather than steps, then two-pass linear `loudnorm` |
 | `loudness` | both small, level simply wrong | two-pass linear `loudnorm` only |
 
 Stages compose, in order: `--filter segmented,speech` fixes level differences

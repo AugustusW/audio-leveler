@@ -93,7 +93,7 @@ required to call it fake stereo, so a downmix could lose content.
 | 階段 | 適用 | 做了什麼 |
 |---|---|---|
 | `speech` | `intra` > `drift`：段落內起伏 | `speechnorm`，再兩段式 linear `loudnorm` |
-| `segmented` | `drift` > `intra`：段落間有落差 | 由素材自己的逐窗響度算出增益曲線，平滑後隨時間套用，再兩段式 linear `loudnorm` |
+| `segmented` | `drift` > `intra`：段落間有落差 | 由素材自己的逐窗響度算出增益曲線，在窗與窗之間內插成斜坡後隨時間套用，再兩段式 linear `loudnorm` |
 | `loudness` | 兩者都小，只是整體音量不對 | 只做兩段式 linear `loudnorm` |
 
 階段可以疊，依序套用：`--filter segmented,speech` 同時修段落之間的落差與段落之內的
