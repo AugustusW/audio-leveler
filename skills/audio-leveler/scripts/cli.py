@@ -44,10 +44,19 @@ def format_report(diag):
         .format(p["p5"], p["p25"], p["p50"], p["p75"], p["p95"]),
         "  speech ratio: {0:.0%} of samples above the gate".format(diag["speech_ratio"]),
         "",
-        "Channels: {0}".format(
-            "dual mono (fake stereo) — safe to downmix to mono" if diag["dual_mono"]
-            else "no dual-mono downmix (mono already, true stereo, or more than 2 channels)"),
+        "Channels: {0}".format(_channel_verdict(diag)),
     ])
+
+
+def _channel_verdict(diag):
+    if diag["dual_mono"]:
+        return "dual mono (fake stereo) — safe to downmix to mono"
+    sep = diag.get("channel_separation_db")
+    if sep is None:
+        return "no dual-mono downmix (mono already, or more than 2 channels)"
+    return ("stereo kept: channel separation {0:.1f} dB. Below the {1:.0f} dB margin "
+            "required to call it fake stereo, so a downmix could lose content."
+            .format(sep, measure.DUAL_MONO_MARGIN_DB))
 
 
 def _resolve_source(spec):

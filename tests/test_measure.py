@@ -220,14 +220,14 @@ def test_detect_dual_mono_short_circuits_for_mono_input(monkeypatch):
     def explode(*a, **k):
         raise AssertionError("must not shell out for a 1-channel file")
     monkeypatch.setattr(measure.subprocess, "run", explode)
-    assert measure.detect_dual_mono("x.mp3", channels=1) is False
+    assert measure.detect_dual_mono("x.mp3", channels=1) == (False, None)
 
 
 def test_detect_dual_mono_returns_false_for_more_than_two_channels(monkeypatch):
     def explode(*a, **k):
         raise AssertionError("must not shell out for a 5.1 file")
     monkeypatch.setattr(measure.subprocess, "run", explode)
-    assert measure.detect_dual_mono("x.mp3", channels=6) is False
+    assert measure.detect_dual_mono("x.mp3", channels=6) == (False, None)
 
 
 def test_detect_dual_mono_runs_two_passes_and_compares(monkeypatch):
@@ -241,7 +241,8 @@ def test_detect_dual_mono_runs_two_passes_and_compares(monkeypatch):
 
     monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(measure.subprocess, "run", fake_run)
-    assert measure.detect_dual_mono("x.mp3", channels=2) is True
+    verdict, separation = measure.detect_dual_mono("x.mp3", channels=2)
+    assert verdict is True and separation == float("inf")
     assert len(calls) == 2
 
 
@@ -283,3 +284,34 @@ def test_improvement_does_not_call_a_rounding_level_change_an_improvement():
 def test_improvement_requires_at_least_half_a_loudness_unit():
     assert measure.improvement({"spread_lu": 10.0}, {"spread_lu": 9.6})["improved"] is False
     assert measure.improvement({"spread_lu": 10.0}, {"spread_lu": 9.5})["improved"] is True
+
+
+def test_channel_separation_db_reports_the_margin_not_just_a_verdict():
+    """布林值不足以判斷。EP13 全片實測差 -44.93 / 節目 -19.98 = 25 dB：本體是
+    dual mono，但開頭 30 秒的片頭是真立體聲，把整檔的差訊號能量拉了上來。
+    只回報 True/False 的話，沒人看得出這是「幾乎全是 dual mono」還是「真立體聲」。
+    """
+    assert measure.channel_separation_db(-44.927889, -19.984394) == pytest.approx(24.94, abs=0.01)
+
+
+def test_channel_separation_db_is_infinite_for_a_silent_difference():
+    assert measure.channel_separation_db(float("-inf"), -20.0) == float("inf")
+
+
+def test_detect_dual_mono_returns_verdict_and_separation(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        rms = "-inf" if "0.5*c0-0.5*c1" in " ".join(cmd) else "-33.0"
+        return subprocess.CompletedProcess(
+            cmd, 0, "lavfi.astats.Overall.RMS_level={0}\n".format(rms), "")
+
+    monkeypatch.setattr(measure.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(measure.subprocess, "run", fake_run)
+    assert measure.detect_dual_mono("x.mp3", channels=2) == (True, float("inf"))
+
+
+def test_build_diagnosis_carries_the_separation_into_the_contract():
+    samples = [(0.0, -20.0), (1.0, -18.0)]
+    d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=2.0,
+                                channels=2, dual_mono=False, window_sec=10.0,
+                                channel_separation_db=24.94)
+    assert d["channel_separation_db"] == pytest.approx(24.94)

@@ -98,7 +98,7 @@ def window_stats(samples, window_sec=DEFAULT_WINDOW_SEC):
 
 
 def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
-                    window_sec=DEFAULT_WINDOW_SEC):
+                    window_sec=DEFAULT_WINDOW_SEC, channel_separation_db=None):
     """組裝診斷契約。純數字，不含任何決定——判斷在 SKILL.md。"""
     kept = gate(samples, integrated)
     if len(kept) < 2:
@@ -122,6 +122,7 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
         "percentiles": pcts,
         "windows": windows,
         "dual_mono": dual_mono,
+        "channel_separation_db": channel_separation_db,
         "speech_ratio": len(kept) / len(samples) if samples else 0.0,
     }
 
@@ -237,6 +238,20 @@ def parse_astats_rms(stdout):
     return value
 
 
+def channel_separation_db(diff_rms_db, program_rms_db):
+    """節目訊號比 L-R 差訊號高多少 dB。越大代表兩聲道越像。
+
+    回報數字而不只是布林值，是因為中間地帶有意義：一支全片 dual mono、只有片頭
+    是真立體聲的節目，整檔會落在 25 dB 上下——那既不是「真立體聲」也不是「可以
+    安全降混」，判讀交給讀數字的人。
+    """
+    if math.isinf(diff_rms_db):
+        return float("inf")
+    if math.isinf(program_rms_db):
+        return 0.0
+    return program_rms_db - diff_rms_db
+
+
 def is_dual_mono(diff_rms_db, program_rms_db, margin_db=DUAL_MONO_MARGIN_DB):
     """差訊號比節目低 margin_db 以上 -> 判為假立體聲。
 
@@ -265,19 +280,26 @@ def _astats_rms(path, pan_filter):
 
 
 def detect_dual_mono(path, channels):
-    """只有雙聲道才需要偵測。單聲道無從談起；超過兩聲道 v0.1.0 不處理。"""
+    """-> (是否為假立體聲, 兩聲道分離度 dB)
+
+    只有雙聲道才需要偵測。單聲道無從談起；超過兩聲道 v0.1.0 不處理，兩種情況的
+    分離度都回報 None。
+    """
     if channels != 2:
-        return False
+        return False, None
     require_tool("ffmpeg")
-    return is_dual_mono(_astats_rms(path, _DIFF_FILTER), _astats_rms(path, _SUM_FILTER))
+    diff = _astats_rms(path, _DIFF_FILTER)
+    program = _astats_rms(path, _SUM_FILTER)
+    return is_dual_mono(diff, program), channel_separation_db(diff, program)
 
 
 def diagnose(path, window_sec=DEFAULT_WINDOW_SEC):
     """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
     channels, duration = probe_audio(path)
     samples, integrated, lra = run_ebur128(path)
-    dual_mono = detect_dual_mono(path, channels)
-    return build_diagnosis(samples, integrated, lra, duration, channels, dual_mono, window_sec)
+    dual_mono, separation = detect_dual_mono(path, channels)
+    return build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
+                           window_sec, channel_separation_db=separation)
 
 
 def improvement(before, after):

@@ -223,3 +223,14 @@ def test_apply_from_url_writes_the_output_to_the_working_directory(monkeypatch, 
     monkeypatch.setattr(cli.apply, "level", fake_level)
     cli.main(["apply", "https://podcasts.apple.com/tw/podcast/x/id1?i=2", "--filter", "speech"])
     assert captured["out"] == cwd / "ep13-leveled.mp3"
+
+
+def test_format_report_states_the_separation_when_stereo_is_not_fake():
+    diag = dict(DIAG, dual_mono=False, channel_separation_db=24.94)
+    text = cli.format_report(diag)
+    assert "24.9" in text
+
+
+def test_format_report_omits_separation_for_mono_sources():
+    diag = dict(DIAG, channels=1, dual_mono=False, channel_separation_db=None)
+    assert "separation" not in cli.format_report(diag).lower()
