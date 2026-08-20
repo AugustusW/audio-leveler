@@ -268,3 +268,11 @@ def detect_dual_mono(path, channels):
         return False
     require_tool("ffmpeg")
     return is_dual_mono(_astats_rms(path, _DIFF_FILTER), _astats_rms(path, _SUM_FILTER))
+
+
+def diagnose(path, window_sec=DEFAULT_WINDOW_SEC):
+    """量測一支素材，回傳診斷契約。這個函式不做任何決定。"""
+    channels, duration = probe_audio(path)
+    samples, integrated, lra = run_ebur128(path)
+    dual_mono = detect_dual_mono(path, channels)
+    return build_diagnosis(samples, integrated, lra, duration, channels, dual_mono, window_sec)
