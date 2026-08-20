@@ -4,6 +4,10 @@
 """
 import json
 import re
+import subprocess
+from pathlib import Path
+
+import measure
 
 TARGET_LUFS = -16.0
 TARGET_TP = -1.5
@@ -92,3 +96,61 @@ def apply_pass_args(first_pass, target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
         target_lufs, target_tp, lra,
         first_pass["input_i"], first_pass["input_tp"], first_pass["input_lra"],
         first_pass["input_thresh"], first_pass["target_offset"])
+
+
+OUTPUT_SUFFIX = "-leveled.mp3"
+OUTPUT_BITRATE = "192k"
+
+
+class OutputExists(Exception):
+    """輸出檔已存在。預設拒絕覆寫，需 --force。"""
+
+
+def default_output_path(source, from_url, cwd=None):
+    """本地來源輸出到來源同目錄；URL 來源輸出到當前目錄。"""
+    stem = Path(source).stem
+    base = Path(cwd) if cwd is not None else (Path.cwd() if from_url else Path(source).parent)
+    return base / "{0}{1}".format(stem, OUTPUT_SUFFIX)
+
+
+def _run(cmd):
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=measure.FFMPEG_TIMEOUT_SEC)
+    if p.returncode != 0:
+        raise measure.FfmpegError("ffmpeg failed: {0}".format(p.stderr.strip()[-500:]))
+    return p
+
+
+def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
+          target_tp=TARGET_TP, force=False):
+    """兩段式執行：先量測、再以 linear=true 套固定增益。回傳執行摘要。
+
+    這個函式不決定 filter_name 也不決定 mono——兩者都由呼叫端明確給定。
+    """
+    out_path = Path(out_path)
+    if out_path.exists() and not force:
+        raise OutputExists(
+            "output already exists: {0} (pass --force to overwrite)".format(out_path))
+    measure.require_tool("ffmpeg")
+
+    chain1 = build_chain(filter_name, mono=mono,
+                         loudnorm_args=measure_pass_args(target_lufs, target_tp))
+    first = parse_loudnorm_json(_run(
+        ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", chain1, "-f", "null", "-"]).stderr)
+
+    chain2 = build_chain(filter_name, mono=mono,
+                         loudnorm_args=apply_pass_args(first, target_lufs, target_tp))
+    second = parse_loudnorm_json(_run(
+        ["ffmpeg", "-y", "-nostats", "-hide_banner", "-i", str(path),
+         "-af", chain2, "-c:a", "libmp3lame", "-b:a", OUTPUT_BITRATE, str(out_path)]).stderr)
+
+    verify_linear(second)
+    return {
+        "filter": filter_name,
+        "mono": mono,
+        "target_lra": loudnorm_target_lra(float(first["input_lra"])),
+        "normalization_type": second["normalization_type"],
+        "first_pass": first,
+        "second_pass": second,
+        "output_path": str(out_path),
+    }

@@ -1,6 +1,9 @@
+import subprocess
+
 import pytest
 
 import apply
+import measure
 
 
 PASS1_STDERR = """[Parsed_loudnorm_2 @ 0x920c0d140] 
@@ -127,3 +130,106 @@ def test_apply_pass_args_lifts_lra_to_the_floor_for_flat_material():
     first = {"input_i": "-16.0", "input_tp": "-3.0", "input_lra": "2.0",
              "input_thresh": "-27.0", "target_offset": "0.0"}
     assert "LRA=5.0" in apply.apply_pass_args(first)
+
+
+def test_default_output_path_sits_next_to_a_local_source(tmp_path):
+    src = tmp_path / "ep13.mp3"
+    assert apply.default_output_path(str(src), from_url=False) == tmp_path / "ep13-leveled.mp3"
+
+
+def test_default_output_path_keeps_the_stem_for_other_extensions(tmp_path):
+    src = tmp_path / "talk.m4a"
+    assert apply.default_output_path(str(src), from_url=False) == tmp_path / "talk-leveled.mp3"
+
+
+def test_default_output_path_for_url_source_goes_to_cwd(tmp_path):
+    got = apply.default_output_path("downloaded episode.mp3", from_url=True, cwd=tmp_path)
+    assert got == tmp_path / "downloaded episode-leveled.mp3"
+
+
+def test_level_refuses_to_overwrite_without_force(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "a-leveled.mp3"
+    out.write_bytes(b"old")
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    with pytest.raises(apply.OutputExists):
+        apply.level(str(src), "speech", out, mono=False)
+
+
+PASS1 = ('{"input_i" : "-9.48", "input_tp" : "-4.37", "input_lra" : "20.00", '
+         '"input_thresh" : "-23.83", "normalization_type" : "dynamic", '
+         '"target_offset" : "0.26"}')
+PASS2 = ('{"input_i" : "-9.48", "input_tp" : "-5.16", "input_lra" : "17.90", '
+         '"input_thresh" : "-22.08", "normalization_type" : "linear", '
+         '"target_offset" : "-0.02"}')
+
+
+def _is_measure_pass(cmd):
+    return "-f" in cmd and cmd[cmd.index("-f") + 1] == "null"
+
+
+def test_level_runs_two_passes_and_verifies_linear(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "a-leveled.mp3"
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if _is_measure_pass(cmd):
+            return subprocess.CompletedProcess(cmd, 0, "", PASS1)
+        out.write_bytes(b"rendered")
+        return subprocess.CompletedProcess(cmd, 0, "", PASS2)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    result = apply.level(str(src), "speech", out, mono=True)
+
+    assert len(calls) == 2
+    assert _is_measure_pass(calls[0])          # 第一段丟棄輸出
+    assert str(out) in calls[1]                # 第二段才寫檔
+    assert result["normalization_type"] == "linear"
+    assert result["target_lra"] == 20.0
+    assert result["mono"] is True
+    assert result["filter"] == "speech"
+
+
+def test_level_measures_the_same_signal_it_renders(tmp_path, monkeypatch):
+    """兩段的前置濾鏡必須一致：第一段量的就是第二段要套的訊號。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", PASS1 if _is_measure_pass(cmd) else PASS2)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    apply.level(str(src), "speech", tmp_path / "o.mp3", mono=True)
+
+    chain1 = calls[0][calls[0].index("-af") + 1]
+    chain2 = calls[1][calls[1].index("-af") + 1]
+    assert chain1.split(",loudnorm=")[0] == chain2.split(",loudnorm=")[0]
+
+
+def test_level_raises_when_second_pass_falls_back_to_dynamic(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "", PASS1))
+    with pytest.raises(apply.LinearModeLost):
+        apply.level(str(src), "speech", tmp_path / "o.mp3", mono=False)
+
+
+def test_level_raises_ffmpeg_error_on_nonzero_exit(tmp_path, monkeypatch):
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, "", "Invalid data"))
+    with pytest.raises(measure.FfmpegError):
+        apply.level(str(src), "speech", tmp_path / "o.mp3", mono=False)
