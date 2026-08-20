@@ -9,6 +9,7 @@ import measure
 
 DIAG = {
     "duration_sec": 3247.0,
+    "window_sec": 360.0,
     "channels": 2,
     "integrated_lufs": -16.8,
     "lra_lu": 9.2,
@@ -18,6 +19,7 @@ DIAG = {
     "percentiles": {"p5": -22.6, "p25": -20.5, "p50": -18.6, "p75": -16.1, "p95": -12.6},
     "windows": [{"start_sec": 0.0, "median": -19.6, "min": -26.5, "max": -10.0}],
     "dual_mono": True,
+    "channel_separation_db": None,
     "speech_ratio": 1.0,
 }
 
@@ -234,3 +236,8 @@ def test_format_report_states_the_separation_when_stereo_is_not_fake():
 def test_format_report_omits_separation_for_mono_sources():
     diag = dict(DIAG, channels=1, dual_mono=False, channel_separation_db=None)
     assert "separation" not in cli.format_report(diag).lower()
+
+
+def test_format_report_names_the_window_length_actually_used():
+    diag = dict(DIAG, window_sec=120.0)
+    assert "2-minute" in cli.format_report(diag)

@@ -315,3 +315,11 @@ def test_build_diagnosis_carries_the_separation_into_the_contract():
                                 channels=2, dual_mono=False, window_sec=10.0,
                                 channel_separation_db=24.94)
     assert d["channel_separation_db"] == pytest.approx(24.94)
+
+
+def test_build_diagnosis_records_the_window_length_it_used():
+    """報告要說「幾分鐘的窗」，那個數字必須來自實際用的窗長，不能是模組預設值。"""
+    samples = [(0.0, -20.0), (1.0, -18.0)]
+    d = measure.build_diagnosis(samples, integrated=-19.0, lra=2.0, duration=2.0,
+                                channels=1, dual_mono=False, window_sec=120.0)
+    assert d["window_sec"] == 120.0

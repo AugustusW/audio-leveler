@@ -38,7 +38,7 @@ def format_report(diag):
         "Short-term loudness (3s window, gated):",
         "  spread (p95 - p5): {0:.1f} LU".format(diag["spread_lu"]),
         "  drift  (between {0:.0f}-minute windows): {1:.1f} LU".format(
-            measure.DEFAULT_WINDOW_SEC / 60.0, diag["drift_lu"]),
+            diag["window_sec"] / 60.0, diag["drift_lu"]),
         "  intra  (within a window, median): {0:.1f} LU".format(diag["intra_lu"]),
         "  percentiles: p5 {0:.1f} / p25 {1:.1f} / p50 {2:.1f} / p75 {3:.1f} / p95 {4:.1f} LUFS"
         .format(p["p5"], p["p25"], p["p50"], p["p75"], p["p95"]),
@@ -170,6 +170,9 @@ def main(argv=None):
     except measure.InsufficientSignal as e:
         print(str(e), file=sys.stderr)
         return EXIT_NO_SIGNAL
+    except apply.LinearNotPossible as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_LINEAR_LOST
     except apply.LinearModeLost as e:
         print(str(e), file=sys.stderr)
         return EXIT_LINEAR_LOST

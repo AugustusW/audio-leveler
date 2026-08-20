@@ -82,20 +82,21 @@ def download_audio(url: str, workdir: Path):
         raise DownloadError(f"yt-dlp probe failed: {probe.stderr.strip()[:300]}")
     title = json.loads(probe.stdout).get("title", "untitled")
     safe = "".join(c for c in title if c.isalnum() or c in " -_")[:80] or "audio"
-    out = workdir / f"{safe}.mp3"
+    # 上游 audio-tldr 在這裡寫死 --audio-format mp3，那是為轉錄挑的（轉錄不在乎多一代
+    # 有損編碼）。這裡的產出要拿去處理再重新編碼，所以取 best：來源本來就是 mp3 時
+    # ffmpeg 直接 copy，是 opus/m4a 時也不會白白多墊一代。
+    out = workdir / f"{safe}.%(ext)s"
     dl = subprocess.run(
-        ["yt-dlp", "--no-warnings", "-x", "--audio-format", "mp3",
+        ["yt-dlp", "--no-warnings", "-x", "--audio-format", "best",
          "-o", str(out), "--no-playlist", url],
         capture_output=True, text=True, timeout=1800,
     )
     if dl.returncode != 0:
         raise DownloadError(f"yt-dlp download failed: {dl.stderr.strip()[:300]}")
-    if not out.exists():
-        found = sorted(workdir.glob("*.mp3"))
-        if not found:
-            raise DownloadError("yt-dlp finished but no mp3 produced")
-        out = found[0]
-    return str(out), title
+    found = sorted(f for f in workdir.iterdir() if f.is_file() and f.suffix != ".json")
+    if not found:
+        raise DownloadError("yt-dlp finished but produced no audio file")
+    return str(found[0]), title
 
 
 def _apple_ids(url: str):

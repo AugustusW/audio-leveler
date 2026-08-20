@@ -159,3 +159,25 @@ def test_fetch_redownloads_when_the_cached_audio_is_gone(monkeypatch, tmp_path):
     __import__("os").unlink(path)
     source.fetch(url, cache_root=tmp_path)
     assert len(downloads) == 2
+
+
+def test_download_does_not_force_an_mp3_transcode(monkeypatch, tmp_path):
+    """移植過來的下載參數寫死 --audio-format mp3，那是為轉錄用途挑的。
+
+    這裡的產出是要拿去處理再重新編碼的音訊，強制轉 mp3 等於在處理前多墊一代
+    有損編碼：opus 來源會變成 opus -> mp3 -> 處理 -> mp3 共三代。
+    """
+    monkeypatch.setattr(source.shutil, "which", lambda name: "/usr/bin/" + name)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--dump-json" in cmd:
+            return __import__("subprocess").CompletedProcess(cmd, 0, '{"title": "T"}', "")
+        (tmp_path / "T.mp3").write_bytes(b"a")
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(source.subprocess, "run", fake_run)
+    source.download_audio("https://example.com/x", tmp_path)
+    download_cmd = calls[-1]
+    assert "mp3" not in download_cmd, download_cmd

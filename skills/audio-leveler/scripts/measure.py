@@ -113,6 +113,7 @@ def build_diagnosis(samples, integrated, lra, duration, channels, dual_mono,
     intras = [w["max"] - w["min"] for w in windows]
     return {
         "duration_sec": duration,
+        "window_sec": window_sec,
         "channels": channels,
         "integrated_lufs": integrated,
         "lra_lu": lra,

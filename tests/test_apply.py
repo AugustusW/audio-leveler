@@ -62,14 +62,17 @@ def test_verify_linear_rejects_silent_fallback_to_dynamic():
     assert "dynamic" in str(e.value)
 
 
-def test_second_pass_derived_from_first_pass_is_linear_by_construction():
-    """回歸守衛：只要目標 LRA 由 loudnorm_target_lra 推導，linear 的前提就成立。
+def test_derived_target_lra_always_satisfies_the_lra_precondition():
+    """回歸守衛：目標 LRA 由 loudnorm_target_lra 推導時，LRA 這個前提一定成立。
 
-    ffmpeg 的規則是「目標 LRA >= 實測 LRA」才可能 linear。實測反例：
-    measured_LRA=20.00 時 LRA=20 得 linear、LRA=3 得 dynamic。
+    ffmpeg 的規則是「目標 LRA >= 實測 LRA」。實測反例：measured_LRA=20.00 時
+    LRA=20 得 linear、LRA=3 得 dynamic。
+
+    注意這只是**兩個前提之一**，另一個是 true peak 的餘裕，見 linear_is_possible。
+    EP13 的單聲道路徑正是 LRA 過關、TP 不過關。
     """
-    measured_lra = 20.00
-    assert apply.loudnorm_target_lra(measured_lra) >= measured_lra
+    for measured_lra in (0.0, 3.1, 5.0, 5.10, 20.00, 49.0):
+        assert apply.loudnorm_target_lra(measured_lra) >= measured_lra
 
 
 def test_filters_cover_exactly_the_three_documented_branches():
@@ -233,3 +236,53 @@ def test_level_raises_ffmpeg_error_on_nonzero_exit(tmp_path, monkeypatch):
                         lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, "", "Invalid data"))
     with pytest.raises(measure.FfmpegError):
         apply.level(str(src), "speech", tmp_path / "o.mp3", mono=False)
+
+
+def test_max_linear_target_lufs_is_bounded_by_true_peak_headroom():
+    """EP13 單聲道路徑實測：input_i -16.73、input_tp -0.15。
+
+    要拉到 -16.0 需要 +0.73 dB，true peak 會落在 +0.58 dBTP，遠高於 -1.5 的上限，
+    所以 linear 不可能成立——而 ffmpeg 對此不報錯，直接改用 dynamic。
+    """
+    first = {"input_i": "-16.73", "input_tp": "-0.15"}
+    assert apply.max_linear_target_lufs(first) == pytest.approx(-18.08, abs=0.01)
+
+
+def test_max_linear_target_lufs_allows_headroom_when_peaks_are_low():
+    first = {"input_i": "-24.0", "input_tp": "-12.0"}
+    assert apply.max_linear_target_lufs(first) == pytest.approx(-13.5)
+
+
+def test_linear_is_feasible_when_the_target_fits_the_headroom():
+    first = {"input_i": "-24.0", "input_tp": "-12.0", "input_lra": "6.0"}
+    assert apply.linear_is_possible(first, target_lufs=-16.0) is True
+
+
+def test_linear_is_not_feasible_for_the_ep13_mono_case():
+    first = {"input_i": "-16.73", "input_tp": "-0.15", "input_lra": "5.10"}
+    assert apply.linear_is_possible(first, target_lufs=-16.0) is False
+
+
+def test_level_fails_before_rendering_when_linear_cannot_hold(tmp_path, monkeypatch):
+    """不可能成立時要在第一段之後就停，不要先花 90 秒算完再說。"""
+    src = tmp_path / "a.mp3"
+    src.write_bytes(b"x")
+    out = tmp_path / "a-leveled.mp3"
+    calls = []
+    body = ('{"input_i" : "-16.73", "input_tp" : "-0.15", "input_lra" : "5.10", '
+            '"input_thresh" : "-26.87", "normalization_type" : "dynamic", '
+            '"target_offset" : "0.0"}')
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", body)
+
+    monkeypatch.setattr(measure, "require_tool", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(apply.subprocess, "run", fake_run)
+    with pytest.raises(apply.LinearNotPossible) as e:
+        apply.level(str(src), "speech", out, mono=True)
+
+    assert len(calls) == 1              # 只跑了第一段
+    assert not out.exists()
+    assert "-18.1" in str(e.value)      # 告訴使用者最高可用的目標
+    assert "--target-lufs" in str(e.value)

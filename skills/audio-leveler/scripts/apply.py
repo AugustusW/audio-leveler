@@ -21,6 +21,10 @@ class LoudnormParseError(Exception):
     """loudnorm 沒有吐出可解析的 JSON。"""
 
 
+class LinearNotPossible(Exception):
+    """第一段量測就顯示 linear 不可能成立，還沒開始算就該停。"""
+
+
 class LinearModeLost(Exception):
     """第二段 loudnorm 靜默退回 dynamic —— 正是本專案要避開的抽送感來源。"""
 
@@ -33,6 +37,25 @@ def loudnorm_target_lra(measured_lra, floor=LRA_FLOOR, ceiling=LRA_CEILING):
     素材上碰巧成立。
     """
     return min(max(measured_lra, floor), ceiling)
+
+
+def max_linear_target_lufs(first_pass, target_tp=TARGET_TP):
+    """在不超過目標 true peak 的前提下，linear 模式最高能拉到幾 LUFS。
+
+    linear 是整檔套一個固定增益，所以 true peak 跟著整體響度一起走：需要的增益是
+    `target_I - input_i`，套完的峰值就是 `input_tp + 增益`。要它不超過 target_tp，
+    目標響度的上限即為 `input_i + (target_tp - input_tp)`。
+    """
+    return float(first_pass["input_i"]) + (target_tp - float(first_pass["input_tp"]))
+
+
+def linear_is_possible(first_pass, target_lufs=TARGET_LUFS, target_tp=TARGET_TP):
+    """ffmpeg 的 linear 有兩個前提，LRA 只是其中一個。
+
+    另一個是 true peak 的餘裕，而它不受 loudnorm_target_lra 控制——EP13 的單聲道
+    路徑就是 LRA 條件成立、TP 條件不成立，ffmpeg 於是靜默改用 dynamic。
+    """
+    return target_lufs <= max_linear_target_lufs(first_pass, target_tp) + 1e-9
 
 
 def parse_loudnorm_json(stderr):
@@ -137,6 +160,15 @@ def level(path, filter_name, out_path, *, mono, target_lufs=TARGET_LUFS,
     first = parse_loudnorm_json(_run(
         ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
          "-af", chain1, "-f", "null", "-"]).stderr)
+
+    if not linear_is_possible(first, target_lufs, target_tp):
+        raise LinearNotPossible(
+            "linear normalisation to {0:.1f} LUFS is not possible for this source: it "
+            "measures {1} LUFS at {2} dBTP, so the required gain would push the true peak "
+            "past the {3:.1f} dBTP limit. The highest target that stays linear is "
+            "{4:.1f} LUFS — rerun with --target-lufs {4:.1f}.".format(
+                target_lufs, first["input_i"], first["input_tp"], target_tp,
+                max_linear_target_lufs(first, target_tp)))
 
     chain2 = build_chain(filter_name, mono=mono,
                          loudnorm_args=apply_pass_args(first, target_lufs, target_tp))
