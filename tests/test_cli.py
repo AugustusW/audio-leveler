@@ -184,3 +184,42 @@ def test_format_comparison_calls_a_regression_worse_not_merely_unimproved():
                                   "converged_pct": -18.75, "improved": False})
     assert "worse" in text.lower()
     assert "+1.5" in text
+
+
+def test_measure_accepts_a_url_source(monkeypatch, capsys, tmp_path):
+    downloaded = tmp_path / "ep13.mp3"
+    downloaded.write_bytes(b"x")
+    monkeypatch.setattr(cli.source, "fetch", lambda url: (str(downloaded), "EP13"))
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    assert cli.main(["measure", "https://podcasts.apple.com/tw/podcast/x/id1?i=2"]) == 0
+    assert "spread" in capsys.readouterr().out.lower()
+
+
+def test_url_download_failure_is_reported_not_swallowed(monkeypatch, capsys):
+    def boom(url):
+        raise cli.source.DownloadError("Apple lookup: episode not found")
+
+    monkeypatch.setattr(cli.source, "fetch", boom)
+    assert cli.main(["measure", "https://podcasts.apple.com/tw/podcast/x/id1?i=2"]) == 2
+    assert "episode not found" in capsys.readouterr().err
+
+
+def test_apply_from_url_writes_the_output_to_the_working_directory(monkeypatch, tmp_path):
+    """URL 來源的輸出不能落在快取目錄裡——使用者找不到，而且清快取會一起刪掉。"""
+    downloaded = tmp_path / "cache" / "ep13.mp3"
+    downloaded.parent.mkdir()
+    downloaded.write_bytes(b"x")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(cli.source, "fetch", lambda url: (str(downloaded), "EP13"))
+    monkeypatch.setattr(cli.measure, "diagnose", lambda path, window_sec=360.0: DIAG)
+    captured = {}
+
+    def fake_level(path, filter_name, out_path, **kwargs):
+        captured["out"] = out_path
+        return dict(RESULT, output_path=str(out_path))
+
+    monkeypatch.setattr(cli.apply, "level", fake_level)
+    cli.main(["apply", "https://podcasts.apple.com/tw/podcast/x/id1?i=2", "--filter", "speech"])
+    assert captured["out"] == cwd / "ep13-leveled.mp3"

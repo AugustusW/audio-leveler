@@ -11,6 +11,7 @@ from pathlib import Path
 
 import apply
 import measure
+import source
 
 EXIT_OK = 0
 EXIT_BAD_INPUT = 2
@@ -49,15 +50,23 @@ def format_report(diag):
     ])
 
 
-def _resolve_local(source):
-    path = Path(source)
+def _resolve_source(spec):
+    """-> (本地檔路徑, 是否來自 URL)
+
+    URL 下載到快取目錄，但輸出**不會**寫在那裡——見 cmd_apply 的輸出路徑。
+    """
+    if source.is_url(spec):
+        path, _ = source.fetch(spec)
+        return path, True
+    path = Path(spec)
     if not path.exists():
-        raise FileNotFoundError("source not found: {0}".format(source))
-    return str(path)
+        raise FileNotFoundError("source not found: {0}".format(spec))
+    return str(path), False
 
 
 def cmd_measure(args):
-    diag = measure.diagnose(_resolve_local(args.source))
+    path, _ = _resolve_source(args.source)
+    diag = measure.diagnose(path)
     print(json.dumps(diag, indent=2) if args.json else format_report(diag))
     return EXIT_OK
 
@@ -94,9 +103,10 @@ def format_comparison(result, before, after, delta):
 
 
 def cmd_apply(args):
-    path = _resolve_local(args.source)
+    path, from_url = _resolve_source(args.source)
     before = measure.diagnose(path)
-    out_path = Path(args.out) if args.out else apply.default_output_path(path, from_url=False)
+    out_path = (Path(args.out) if args.out
+                else apply.default_output_path(path, from_url=from_url))
     mono = {"auto": before["dual_mono"], "force": True, "never": False}[args.mono]
     try:
         result = apply.level(path, args.filter, out_path, mono=mono,
@@ -115,13 +125,13 @@ def build_parser():
         description="Measure loudness inconsistency in speech audio, then fix it.")
     sub = parser.add_subparsers(dest="command", required=True)
     m = sub.add_parser("measure", help="measure only; print a diagnosis")
-    m.add_argument("source", help="local audio or video file")
+    m.add_argument("source", help="local file, an Apple Podcasts episode link, or any URL yt-dlp can fetch")
     m.add_argument("--json", action="store_true",
                    help="emit the diagnosis contract as JSON for an LLM or a script")
     m.set_defaults(func=cmd_measure)
 
     a = sub.add_parser("apply", help="apply an explicitly chosen filter, then re-measure")
-    a.add_argument("source", help="local audio or video file")
+    a.add_argument("source", help="local file, an Apple Podcasts episode link, or any URL yt-dlp can fetch")
     a.add_argument("--filter", required=True, choices=sorted(apply.FILTERS),
                    help="which filter to apply; there is deliberately no 'auto' — "
                         "without an LLM this tool does not guess")
@@ -139,6 +149,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
+    except source.DownloadError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_BAD_INPUT
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return EXIT_BAD_INPUT
