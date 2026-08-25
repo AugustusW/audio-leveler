@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1 — 2026-08-25
+
+No behavior change — this release tags the repository for the first time so the
+version is resolvable from the outside (releases/tags API), and catches the
+notes up with what landed after 0.1.0:
+
+- CI runs the test suite on Windows and against the Codex CLI harness, so the
+  README's support claims are backed by a build rather than asserted.
+- SECURITY.md with an explicit non-vulnerability list.
+- README states what the model-judgement step actually costs, in tokens.
+
 ## 0.1.0 — 2026-08-20
 
 First release.

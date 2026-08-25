@@ -7,7 +7,7 @@
       "name": "audio-leveler",
       "source": "./",
       "description": "Diagnose and fix inconsistent loudness in speech audio: measure first, then pick the right filter.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }
