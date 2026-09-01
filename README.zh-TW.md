@@ -190,7 +190,7 @@ dynamic 模式。工具自己檢查這三個前提，在目標達不到時**於�
 
 ## 狀態
 
-v0.1.0（[CHANGELOG](./CHANGELOG.md)）——165 條測試，其中 159 條完全離線（ffmpeg、ffprobe
+v0.1.1（[CHANGELOG](./CHANGELOG.md)）——173 條測試，其中 167 條完全離線（ffmpeg、ffprobe
 與 yt-dlp 都被 mock，不需網路也不需媒體檔）。其餘 6 條會真的呼叫 ffmpeg，CI 予以排除。
 
 | 元件 | 驗證版本 |
