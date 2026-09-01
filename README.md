@@ -214,7 +214,7 @@ These are deliberate, not gaps in testing — for the latter see [Status](#statu
 
 ## Status
 
-v0.1.0 ([CHANGELOG](./CHANGELOG.md)) — 165 tests, of which 159 run fully offline (ffmpeg, ffprobe
+v0.1.1 ([CHANGELOG](./CHANGELOG.md)) — 173 tests, of which 167 run fully offline (ffmpeg, ffprobe
 and yt-dlp are mocked; no network, no media). The remaining 6 drive real ffmpeg and are excluded
 from CI.
 
