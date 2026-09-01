@@ -68,10 +68,13 @@ def test_newest_changelog_entry_matches_plugin_version():
 
 def test_readme_status_versions_match_plugin_version():
     for readme in READMES:
-        stated = STATUS_VERSION_RE.search(_read(readme))
-        assert stated, f"{readme.name} has no 'vX.Y.Z ([CHANGELOG]...)' Status line"
-        assert stated.group(1) == _plugin_version(), (
-            f"{readme.name} Status says v{stated.group(1)} but plugin.json says "
+        stated = STATUS_VERSION_RE.findall(_read(readme))
+        assert len(stated) == 1, (
+            f"{readme.name} has {len(stated)} Status version lines; a stale "
+            "duplicate survives first-wins reading, keep exactly one"
+        )
+        assert stated[0] == _plugin_version(), (
+            f"{readme.name} Status says v{stated[0]} but plugin.json says "
             f"{_plugin_version()}"
         )
 
